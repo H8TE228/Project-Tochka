@@ -15,7 +15,7 @@ pip install -r requirements.txt
 SECRET_KEY=<ключ>
 DEBUG=True
 DB_HOST=localhost
-DB_PORT=5432
+DB_PORT=5433
 DB_USER=myuser
 DB_PASS=mypassword
 DB_NAME=mydatabase
