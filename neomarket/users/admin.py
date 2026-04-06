@@ -10,6 +10,7 @@ class UserAdmin(BaseUserAdmin):
     list_display = [
         'email',
         'username',
+        'role',
         'phone_number',
         'country',
         'region',
@@ -20,6 +21,7 @@ class UserAdmin(BaseUserAdmin):
     ]
     fieldsets = (
         (None, {'fields': ('email', 'username', 'password')}),
+        (_('Role'), {'fields': ('role',)}),
         (_('Personal info'), {'fields': ('first_name', 'last_name', 'phone_number', 'profile_picture')}),
         (_('Address'), {'fields': ('country', 'region', 'city', 'district', 'street', 'building', 'apartment')}),
         (_('Important dates'), {'fields': ('last_login', 'created_at', 'updated_at')}),
@@ -27,10 +29,10 @@ class UserAdmin(BaseUserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('email', 'username', 'phone_number', 'password1', 'password2', 'is_staff'),
+            'fields': ('email', 'username', 'phone_number', 'password1', 'password2', 'role', 'is_staff'),
         }),
     )
-    list_filter = ['country', 'region', 'city', 'district', 'created_at', 'updated_at']
+    list_filter = ['role', 'country', 'region', 'city', 'district', 'created_at', 'updated_at']
     search_fields = ['email', 'username', 'phone_number']
     ordering = ['email',]
 
