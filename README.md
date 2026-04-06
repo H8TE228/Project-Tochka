@@ -28,11 +28,11 @@ python -c 'from django.core.management.utils import get_random_secret_key; print
 
 Развернуть PostgreSQL можно из Docker
 ```sh
-docker run --name my-postgres \
+docker run --name my-postgres1 \
   -e POSTGRES_PASSWORD=mypassword \
   -e POSTGRES_USER=myuser \
   -e POSTGRES_DB=mydatabase \
-  -p 5432:5432 \
+  -p 5433:5432 \
   -d postgres:16
 ```
 
