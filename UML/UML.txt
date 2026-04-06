@@ -1,0 +1,399 @@
+@startuml
+hide circle
+skinparam classAttributeIconSize 0
+
+/' =========================
+   Enums / reference types
+   ========================= '/
+
+enum ProductStatus {
+  CREATED
+  ON_MODERATION
+  MODERATED
+  BLOCKED
+}
+
+enum CartUnavailableReason {
+  OUT_OF_STOCK
+  PRODUCT_BLOCKED
+  PRODUCT_DELISTED
+  SKU_DISABLED
+}
+
+enum SubscriptionEventCode {
+  IN_STOCK
+  PRICE_DOWN
+}
+
+enum BannerEventType {
+  impression
+  click
+}
+
+/' Order statuses are inferred (no explicit schemas in b2c/orders/openapi.yaml) '/
+enum OrderStatus {
+  CREATED
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+/' =========================
+   Core master data
+   ========================= '/
+
+class Seller {
+  id: UUIDField(primary_key=True)
+  name: CharField(max_length=200)
+  created_at: DateTimeField(auto_now_add=True)
+}
+
+class Category {
+  id: UUIDField(primary_key=True)
+  name: CharField(max_length=200)
+  slug: CharField(max_length=255)
+  description: TextField(null=True)
+  parent: ForeignKey("Category", null=True, blank=True, on_delete=SET_NULL)  // parent_id
+  is_active: BooleanField(default=True)
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+class Product {
+  id: UUIDField(primary_key=True)     // cart/catalog use uuid examples
+  seller: ForeignKey(Seller, on_delete=CASCADE)
+  slug: CharField(max_length=255)
+  title: CharField(max_length=500)
+  description: TextField()
+  status: CharField(choices=ProductStatus)  // mirrors ProductStatus schema
+  category: ForeignKey(Category, on_delete=PROTECT)
+
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+class SKU {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+
+  name: CharField(max_length=500)
+  price_cents: IntegerField()          // catalog/cart represent integer/number price
+  active_quantity: IntegerField()     // cart uses active_quantity
+  is_enabled: BooleanField(default=True)
+
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+/' =========================
+   Product attributes & media
+   ========================= '/
+
+class ProductImage {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  url: CharField(max_length=2000)
+  ordering: IntegerField()
+}
+
+class SKUImage {
+  id: UUIDField(primary_key=True)
+  sku: ForeignKey(SKU, on_delete=CASCADE)
+  url: CharField(max_length=2000)
+  ordering: IntegerField()
+}
+
+class ProductCharacteristic {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+
+  name: CharField(max_length=200)   // Characteristic.name
+  value: CharField(max_length=2000) // Characteristic.value
+}
+
+class SKUCharacteristic {
+  id: UUIDField(primary_key=True)
+  sku: ForeignKey(SKU, on_delete=CASCADE)
+
+  name: CharField(max_length=200)
+  value: CharField(max_length=2000)
+}
+
+/' =========================
+   Favorites
+   ========================= '/
+
+class User {
+  id: UUIDField(primary_key=True)
+  created_at: DateTimeField(auto_now_add=True)
+}
+
+/' FavoriteItem is explicit in b2c/cart schemas (FavoriteItem + added_at) '/
+class FavoriteItem {
+  id: UUIDField(primary_key=True)
+  user: ForeignKey(User, on_delete=CASCADE)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  added_at: DateTimeField(auto_now_add=True)
+}
+
+/' =========================
+   Cart
+   ========================= '/
+
+class Cart {
+  id: UUIDField(primary_key=True)
+  user: ForeignKey(User, null=True, blank=True, on_delete=SET_NULL)
+  session_id: UUIDField(null=True, blank=True)  // XSessionId header in specs
+
+  currency: CharField(max_length=3, default="RUB")  // CartSummary.currency example
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+/' CartItem includes snapshot-like pricing/availability from b2c/cart schemas '/
+class CartItem {
+  id: UUIDField(primary_key=True)     // item_id in APIs
+  cart: ForeignKey(Cart, on_delete=CASCADE)
+
+  sku: ForeignKey(SKU, on_delete=PROTECT)
+  product: ForeignKey(Product, on_delete=PROTECT)
+
+  product_title: CharField(max_length=500)
+  sku_name: CharField(max_length=500)
+  image_url: CharField(max_length=2000, null=True, blank=True)
+
+  unit_price_cents: IntegerField()
+  quantity: IntegerField()          // >=1
+  available_stock: IntegerField()  // active quantity snapshot
+  line_total_cents: IntegerField()
+
+  available: BooleanField(default=True)
+  unavailable_reason: CharField(null=True, blank=True)  // CartUnavailableReason
+  unavailable_reason_enum: CharField(null=True, blank=True)
+}
+
+/' =========================
+   Subscriptions / notifications
+   ========================= '/
+
+/' SubscriptionResponse + SubscribeRequest in b2c/cart schemas '/
+class Subscription {
+  id: UUIDField(primary_key=True)
+  user: ForeignKey(User, on_delete=CASCADE)
+  product: ForeignKey(Product, on_delete=CASCADE)
+
+  created_at: DateTimeField(auto_now_add=True)
+}
+
+/' Many event codes per subscription are modeled via join table '/
+class SubscriptionEventType {
+  code: CharField(primary_key=True) // IN_STOCK, PRICE_DOWN
+  label: CharField(max_length=200)
+}
+
+class SubscriptionEvent {
+  id: UUIDField(primary_key=True)
+  subscription: ForeignKey(Subscription, on_delete=CASCADE)
+  event_type: ForeignKey(SubscriptionEventType, on_delete=CASCADE)
+
+  created_at: DateTimeField(auto_now_add=True)
+
+  // Unique constraint recommended:
+  // UniqueConstraint(fields=["subscription","event_type"])
+}
+
+/' =========================
+   Banners & analytics events
+   ========================= '/
+
+class Banner {
+  id: UUIDField(primary_key=True)
+  title: CharField(max_length=500)
+  image_url: CharField(max_length=2000)
+  link: CharField(max_length=2000)   // internal path (catalog, collections, etc.)
+  priority: IntegerField()
+
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+class BannerEvent {
+  id: UUIDField(primary_key=True)
+  banner: ForeignKey(Banner, on_delete=CASCADE)
+  user: ForeignKey(User, null=True, blank=True, on_delete=SET_NULL) // inferred from user_id in specs
+  event_type: CharField(choices=BannerEventType)
+  timestamp: DateTimeField() // ISO date-time in specs
+}
+
+/' =========================
+   Collections / recommendations
+   ========================= '/
+
+class Collection {
+  id: UUIDField(primary_key=True)
+  title: CharField(max_length=500)
+  description: TextField(null=True, blank=True)
+
+  cover_image_url: CharField(max_length=2000)
+  target_url: CharField(max_length=2000)
+  priority: IntegerField()
+
+  start_date: DateField()
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+}
+
+class CollectionProduct {
+  id: UUIDField(primary_key=True)
+  collection: ForeignKey(Collection, on_delete=CASCADE)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  // Ordering/position not explicitly present in schemas.yaml/specs -> omitted
+}
+
+/' =========================
+   Orders (inferred tables)
+   ========================= '/
+
+class Order {
+  id: UUIDField(primary_key=True)
+  user: ForeignKey(User, on_delete=CASCADE)
+
+  status: CharField(choices=OrderStatus)  // inferred from b2c/orders description
+  total_amount_cents: IntegerField()
+  currency: CharField(max_length=3)
+
+  created_at: DateTimeField(auto_now_add=True)
+  updated_at: DateTimeField(auto_now=True)
+  cancelled_at: DateTimeField(null=True, blank=True)
+}
+
+class OrderItem {
+  id: UUIDField(primary_key=True)
+  order: ForeignKey(Order, on_delete=CASCADE)
+
+  product: ForeignKey(Product, on_delete=PROTECT)
+  sku: ForeignKey(SKU, on_delete=PROTECT)
+
+  quantity: IntegerField()
+  unit_price_cents: IntegerField()
+  line_total_cents: IntegerField()
+}
+
+/' =========================
+   Order status history (inferred)
+   ========================= '/
+
+class OrderStatusEvent {
+  id: UUIDField(primary_key=True)
+  order: ForeignKey(Order, on_delete=CASCADE)
+
+  from_status: CharField(choices=OrderStatus)
+  to_status: CharField(choices=OrderStatus)
+  changed_at: DateTimeField(auto_now_add=True)
+}
+
+/' =========================
+   B2B invoices (inferred from endpoint names)
+   ========================= '/
+
+class Invoice {
+  id: UUIDField(primary_key=True)
+  seller: ForeignKey(Seller, on_delete=CASCADE)
+
+  created_at: DateTimeField(auto_now_add=True)
+  accepted_at: DateTimeField(null=True, blank=True)
+}
+
+class InvoiceLine {
+  id: UUIDField(primary_key=True)
+  invoice: ForeignKey(Invoice, on_delete=CASCADE)
+  sku: ForeignKey(SKU, on_delete=PROTECT)
+
+  quantity: IntegerField()
+}
+
+/' =========================
+   Moderation (inferred from moderation logic)
+   ========================= '/
+
+class ModerationQueueItem {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  created_at: DateTimeField(auto_now_add=True)
+  status: CharField(choices=ProductStatus) // inferred
+}
+
+class ProductSnapshot {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  created_at: DateTimeField(auto_now_add=True)
+
+  // "before" / "after" from moderation description
+  snapshot_kind: CharField(max_length=16) // BEFORE|AFTER
+  snapshot_json: JSONField()
+}
+
+class ModerationDecision {
+  id: UUIDField(primary_key=True)
+  product: ForeignKey(Product, on_delete=CASCADE)
+  moderator: ForeignKey(User, on_delete=SET_NULL, null=True, blank=True)
+
+  decision: CharField(max_length=16) // APPROVE|DECLINE
+  reason_text: TextField(null=True, blank=True)
+  decided_at: DateTimeField(auto_now_add=True)
+
+  snapshot: ForeignKey(ProductSnapshot, on_delete=SET_NULL, null=True, blank=True)
+}
+
+/' =========================
+   Relationships with explicit 1 / *
+   ========================= '/
+
+Seller "1" -- "*" Product : offers
+
+Category "1" -- "*" Product : categorizes
+Category "1" -- "*" Category : parent/children (parent_id)
+
+Product "1" -- "*" SKU : has_skus
+Product "1" -- "*" ProductImage : has_images
+SKU "1" -- "*" SKUImage : has_images
+
+Product "1" -- "*" ProductCharacteristic : has_characteristics
+SKU "1" -- "*" SKUCharacteristic : has_characteristics
+
+User "1" -- "*" FavoriteItem : favorites
+Product "1" -- "*" FavoriteItem : favorited_by
+
+User "1" -- "*" Cart : has_carts
+Cart "1" -- "*" CartItem : contains_items
+CartItem "*" -- "1" SKU : cart_item.sku
+CartItem "*" -- "1" Product : cart_item.product
+
+User "1" -- "*" Subscription : subscriptions
+Product "1" -- "*" Subscription : for_product
+Subscription "1" -- "*" SubscriptionEvent : has_events
+SubscriptionEventType "1" -- "*" SubscriptionEvent : maps
+
+Banner "1" -- "*" BannerEvent : produces_events
+User "1" -- "*" BannerEvent : generated_by
+
+Collection "1" -- "*" CollectionProduct : includes
+Product "1" -- "*" CollectionProduct : in_collections
+
+User "1" -- "*" Order : places
+Order "1" -- "*" OrderItem : items
+Product "1" -- "*" OrderItem : uses_product
+SKU "1" -- "*" OrderItem : uses_sku
+Order "1" -- "*" OrderStatusEvent : state_history
+
+Seller "1" -- "*" Invoice : issues
+Invoice "1" -- "*" InvoiceLine : lines
+SKU "1" -- "*" InvoiceLine : line_sku
+
+Product "1" -- "*" ModerationQueueItem : queued_for_check
+Product "1" -- "*" ProductSnapshot : snapshot_history
+Product "1" -- "*" ModerationDecision : decisions
+User "1" -- "*" ModerationDecision : made_by
+
+@enduml
