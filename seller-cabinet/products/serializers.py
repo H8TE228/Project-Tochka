@@ -2,7 +2,7 @@ from rest_framework import serializers
 from .models import (
     Category, Seller, Product, ProductImage, ProductCharacteristic,
     SKU, SKUImage, SKUCharacteristic,
-    Invoice, InvoiceLine,
+    Invoice, InvoiceLine, CategorySerializer,
 )
 
 # ---------------------------------------------------------------------------
@@ -14,7 +14,25 @@ class CategoryRefSerializer(serializers.ModelSerializer):
         model = Category
         fields = ("id", "name")
 
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ("id", "name")
 
+    def validate_name(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Category name cannot be empty.")
+
+        qs = Category.objects.filter(name__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if qs.exists():
+            raise serializers.ValidationError("Category with this name already exists.")
+
+        return value
+    
 class ImageSerializer(serializers.Serializer):
     url = serializers.CharField(max_length=2000)
     ordering = serializers.IntegerField(default=0)

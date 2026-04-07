@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from seller_cabinet.permissions import IsSeller
-from .models import Product, SKU, Seller, Invoice
+from .models import Product, SKU, Seller, Invoice, Category
 from .serializers import (
     ProductReadSerializer,
     ProductWriteSerializer,
@@ -165,3 +165,53 @@ class SKUDetailView(APIView):
         sku = serializer.save()
 
         return Response(SKUReadSerializer(sku).data, status=200)
+    
+class CategoryListCreateView(APIView):
+    """
+    GET  /api/v1/categories — list categories
+    POST /api/v1/categories — create category
+    """
+
+    permission_classes = [IsSeller]
+
+    def get(self, request):
+        categories = Category.objects.all().order_by("name")
+        return Response(CategorySerializer(categories, many=True).data)
+
+    def post(self, request):
+        serializer = CategorySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        category = serializer.save()
+        return Response(CategorySerializer(category).data, status=status.HTTP_201_CREATED)
+
+class CategoryDetailView(APIView):
+    """
+    GET    /api/v1/categories/{id} — get category
+    PUT    /api/v1/categories/{id} — update category
+    DELETE /api/v1/categories/{id} — delete category
+    """
+
+    permission_classes = [IsSeller]
+
+    def get(self, request, category_id):
+        category = get_object_or_404(Category, pk=category_id)
+        return Response(CategorySerializer(category).data)
+
+    def put(self, request, category_id):
+        category = get_object_or_404(Category, pk=category_id)
+        serializer = CategorySerializer(category, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        return Response(CategorySerializer(updated).data)
+
+    def delete(self, request, category_id):
+        category = get_object_or_404(Category, pk=category_id)
+
+        if Product.objects.filter(category=category).exists():
+            return Response(
+                {"detail": "Cannot delete category that is used by products."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        category.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
