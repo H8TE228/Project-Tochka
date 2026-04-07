@@ -55,6 +55,7 @@ class SKUImageSerializer(serializers.ModelSerializer):
 
 
 class SKUReadSerializer(serializers.ModelSerializer):
+    price = serializers.IntegerField(source="price_cents")
     activeQuantity = serializers.IntegerField(source="active_quantity")
     characteristics = CharacteristicValueSerializer(many=True)
     images = SKUImageSerializer(many=True)
@@ -64,7 +65,7 @@ class SKUReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
-            "price_cents",
+            "price",
             "activeQuantity",
             "is_enabled",
             "characteristics",
