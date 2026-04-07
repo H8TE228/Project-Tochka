@@ -5,7 +5,6 @@ from .models import (
     Invoice, InvoiceLine,
 )
 
-
 # ---------------------------------------------------------------------------
 # Shared field serializers (match spec schema names)
 # ---------------------------------------------------------------------------
@@ -340,3 +339,48 @@ class SKUWriteSerializer(serializers.Serializer):
             SKUCharacteristic(sku=sku, **ch) for ch in characteristics_data
         ])
         return sku
+# ---------------------------------------------------------------------------
+# (PUT /api/v1/skus/<uuid>)
+# ---------------------------------------------------------------------------
+class SKUBaseWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=500)
+    price_cents = serializers.IntegerField(min_value=0)
+    active_quantity = serializers.IntegerField(min_value=0)
+    is_enabled = serializers.BooleanField()
+    characteristics = CharacteristicValueSerializer(many=True, required=False)
+    images = ImageSerializer(many=True, required=False)
+
+    def _save_characteristics(self, sku, data):
+        SKUCharacteristic.objects.bulk_create([
+            SKUCharacteristic(sku=sku, **ch) for ch in data
+        ])
+
+    def _save_images(self, sku, data):
+        SKUImage.objects.bulk_create([
+            SKUImage(sku=sku, **img) for img in data
+        ])
+
+        def update(self, instance, validated_data):
+        characteristics_data = validated_data.pop("characteristics", None)
+        images_data = validated_data.pop("images", None)
+
+        # обновляем простые поля
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        instance.save()
+
+        # характеристики
+        if characteristics_data is not None:
+            instance.characteristics.all().delete()
+            self._save_characteristics(instance, characteristics_data)
+
+        # изображения
+        if images_data is not None:
+            instance.images.all().delete()
+            self._save_images(instance, images_data)
+
+        return instance
+    
+class SKUUpdateSerializer(SKUBaseWriteSerializer):
+    pass

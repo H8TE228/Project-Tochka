@@ -16,6 +16,7 @@ from .serializers import (
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
     InvoiceAcceptSerializer,
+    SKUUpdateSerializer,
 )
 
 
@@ -137,3 +138,21 @@ class InvoiceAcceptView(APIView):
         invoice.save(update_fields=["accepted_at"])
 
         return Response(InvoiceReadSerializer(invoice).data)
+
+class SKUDetailView(APIView):
+    permission_classes = [IsSeller]
+
+    def put(self, request, sku_id):
+        seller = get_or_create_seller(request.user)
+
+        sku = get_object_or_404(
+            SKU.objects.select_related("product"),
+            pk=sku_id,
+            product__seller=seller
+        )
+
+        serializer = SKUUpdateSerializer(sku, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        sku = serializer.save()
+
+        return Response(SKUReadSerializer(sku).data, status=200)

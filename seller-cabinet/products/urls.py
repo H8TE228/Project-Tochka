@@ -7,4 +7,5 @@ urlpatterns = [
     path("skus", views.SKUCreateView.as_view()),
     path("invoices", views.InvoiceCreateView.as_view()),
     path("invoices/accept", views.InvoiceAcceptView.as_view()),
+    path("skus/<uuid:sku_id>", views.SKUDetailView.as_view()),
 ]
