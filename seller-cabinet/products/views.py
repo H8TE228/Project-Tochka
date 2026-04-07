@@ -47,6 +47,15 @@ class ProductCreateView(APIView):
             ProductReadSerializer(product).data,
             status=status.HTTP_201_CREATED,
         )
+    def get(self, request):
+        seller = get_or_create_seller(request.user)
+        products = Product.objects.filter(seller=seller).select_related("category").prefetch_related(
+            "images",
+            "characteristics",
+            "skus__characteristics",
+            "skus__images",
+            )
+        return Response(ProductReadSerializer(products, many=True).data)
 
 
 class ProductDetailView(APIView):
