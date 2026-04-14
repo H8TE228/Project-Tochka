@@ -16,3 +16,4 @@ class Migration(migrations.Migration):
             field=models.CharField(choices=[('admin', 'Admin'), ('client', 'Client'), ('moderator', 'Moderator'), ('seller', 'Seller')], default='client', max_length=20),
         ),
     ]
+
