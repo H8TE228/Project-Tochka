@@ -14,9 +14,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: >
-      sh -c "python manage.py migrate &&
-             python manage.py runserver 0.0.0.0:8001"
+    # Migrations run in image ENTRYPOINT (entrypoint.sh) before CMD (runserver).
 
   db:
     image: postgres:16-alpine
