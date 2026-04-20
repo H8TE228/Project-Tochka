@@ -22,7 +22,7 @@ from .serializers import (
 
 def get_or_create_seller(user) -> Seller:
     """Resolve Seller from JWT user. Creates a stub record on first access."""
-    auth_uuid = uuid.UUID(str(user.id)) if not isinstance(user.id, uuid.UUID) else user.id
+    auth_uuid = uuid.UUID(int=int(user.id)) if not isinstance(user.id, uuid.UUID) else user.id
     seller, _ = Seller.objects.get_or_create(
         auth_user_id=auth_uuid,
         defaults={"name": getattr(user, "email", str(auth_uuid))},
