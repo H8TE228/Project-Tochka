@@ -44,6 +44,11 @@ else:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+MOD_URL = os.getenv("MOD_URL", "http://moderation:8002")
+B2C_URL = os.getenv("B2C_URL", "http://b2c:8003")
+B2B_TO_MOD_KEY = os.getenv("B2B_TO_MOD_KEY", "dev-b2b-to-mod-key")
+B2B_TO_B2C_KEY = os.getenv("B2B_TO_B2C_KEY", "dev-b2b-to-b2c-key")
+
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "seller_cabinet.authentication.JWTAuthentication",
@@ -54,6 +59,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
+    "EXCEPTION_HANDLER": "seller_cabinet.exceptions.canonical_exception_handler",
 }
 
 LANGUAGE_CODE = "en-us"

@@ -27,7 +27,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["python", "manage.py", "test", "--noinput"]
+    command: ["pytest", "-v"]
 
 volumes:
   pgdata_test:

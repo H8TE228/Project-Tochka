@@ -33,12 +33,22 @@ class Category(models.Model):
         return self.name
 
 
+class BlockingReason(models.Model):
+    """Справочник причин блокировки. Заполняется Moderation, читается B2B."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=500)
+
+    def __str__(self):
+        return self.title
+
+
 class Product(models.Model):
     class Status(models.TextChoices):
         CREATED = "CREATED", "Created"
         ON_MODERATION = "ON_MODERATION", "On Moderation"
         MODERATED = "MODERATED", "Moderated"
         BLOCKED = "BLOCKED", "Blocked"
+        HARD_BLOCKED = "HARD_BLOCKED", "Hard Blocked"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     seller = models.ForeignKey(Seller, on_delete=models.CASCADE, related_name="products")
@@ -51,8 +61,23 @@ class Product(models.Model):
     category = models.ForeignKey(
         Category, on_delete=models.PROTECT, related_name="products"
     )
+    deleted = models.BooleanField(default=False)
+
+    # Заполняется Moderation при отклонении (B2B-9 и US-B2B-05)
+    blocking_reason = models.ForeignKey(
+        BlockingReason, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="products",
+    )
+    moderator_comment = models.TextField(blank=True, default="")
+    field_reports = models.JSONField(default=list, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def blocked(self) -> bool:
+        """Производное поле для response — отдельно от status (по канон-flow B2B-5)."""
+        return self.status in (self.Status.BLOCKED, self.Status.HARD_BLOCKED)
 
     def __str__(self):
         return self.title
@@ -91,10 +116,19 @@ class SKU(models.Model):
         Product, on_delete=models.CASCADE, related_name="skus"
     )
     name = models.CharField(max_length=500)
-    # Price stored in kopecks (as per spec)
-    price_cents = models.IntegerField()
+
+    # Все суммы — копейки (integer), как в канон-flow B2B-2
+    price = models.IntegerField()              # было price_cents
+    cost_price = models.IntegerField(default=0)  # было cost_price_cents
+    discount = models.IntegerField(default=0)    # абсолютная скидка в копейках
+
+    # Одно фото на SKU — по канон-flow B2B-2
+    image = models.CharField(max_length=2000, default="")
+
     active_quantity = models.IntegerField(default=0)
+    reserved_quantity = models.IntegerField(default=0)
     is_enabled = models.BooleanField(default=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

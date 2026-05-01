@@ -1,4 +1,4 @@
-
+#!/bin/sh
 set -e
 
 HOST="${DB_HOST:-localhost}"

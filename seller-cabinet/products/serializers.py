@@ -9,8 +9,11 @@ from .models import (
     SKUCharacteristic,
     Invoice,
     InvoiceLine,
+    BlockingReason,
 )
 
+
+# ---------- shared mini-serializers ----------
 
 class CategoryRefSerializer(serializers.ModelSerializer):
     class Meta:
@@ -27,18 +30,16 @@ class CategorySerializer(serializers.ModelSerializer):
         value = value.strip()
         if not value:
             raise serializers.ValidationError("Category name cannot be empty.")
-
         qs = Category.objects.filter(name__iexact=value)
         if self.instance:
             qs = qs.exclude(pk=self.instance.pk)
-
         if qs.exists():
             raise serializers.ValidationError("Category with this name already exists.")
-
         return value
 
 
 class ImageSerializer(serializers.Serializer):
+    """Картинка товара (массив у Product)."""
     url = serializers.CharField(max_length=2000)
     ordering = serializers.IntegerField(default=0)
 
@@ -48,63 +49,125 @@ class CharacteristicValueSerializer(serializers.Serializer):
     value = serializers.CharField(max_length=2000)
 
 
-class SKUImageSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SKUImage
-        fields = ("url", "ordering")
+class BlockingReasonReadSerializer(serializers.ModelSerializer):
+    """Канон-flow B2B-5: blocking_reason = {id, title, comment}."""
+    comment = serializers.SerializerMethodField()
 
+    class Meta:
+        model = BlockingReason
+        fields = ("id", "title", "comment")
+
+    def get_comment(self, obj):
+        product = self.context.get("product")
+        return product.moderator_comment if product else ""
+
+
+# ---------- SKU ----------
 
 class SKUReadSerializer(serializers.ModelSerializer):
-    price = serializers.IntegerField(source="price_cents")
-    activeQuantity = serializers.IntegerField(source="active_quantity")
+    """Seller cabinet ответ — включает cost_price и reserved_quantity (канон-flow B2B-5)."""
     characteristics = CharacteristicValueSerializer(many=True)
-    images = SKUImageSerializer(many=True)
 
     class Meta:
         model = SKU
         fields = (
-            "id",
-            "name",
-            "price",
-            "activeQuantity",
-            "is_enabled",
-            "characteristics",
-            "images",
+            "id", "name", "price", "cost_price", "discount", "image",
+            "active_quantity", "reserved_quantity", "characteristics",
         )
 
+
+class SKUBaseWriteSerializer(serializers.Serializer):
+    """Общая база для POST /skus и PUT /skus/{id} (канон-flow B2B-2, B2B-3)."""
+    name = serializers.CharField(max_length=255, min_length=1)
+    price = serializers.IntegerField(min_value=1)         # > 0 по канону
+    cost_price = serializers.IntegerField(min_value=1)    # > 0 по канону
+    discount = serializers.IntegerField(min_value=0, default=0)
+    image = serializers.CharField(max_length=2000, min_length=1)  # missing_image_returns_400
+    characteristics = CharacteristicValueSerializer(many=True, required=False, default=list)
+
+    def _save_characteristics(self, sku, data):
+        SKUCharacteristic.objects.bulk_create([
+            SKUCharacteristic(sku=sku, **c) for c in data
+        ])
+
+    def update(self, instance, validated_data):
+        chars = validated_data.pop("characteristics", None)
+        # US-B2B-03: реальные остатки и резервы через PUT не меняются
+        validated_data.pop("active_quantity", None)
+        validated_data.pop("reserved_quantity", None)
+
+        for k, v in validated_data.items():
+            setattr(instance, k, v)
+        instance.save()
+
+        if chars is not None:
+            instance.characteristics.all().delete()
+            self._save_characteristics(instance, chars)
+        return instance
+
+
+class SKUWriteSerializer(SKUBaseWriteSerializer):
+    """POST /skus — канон-flow B2B-2."""
+    product_id = serializers.UUIDField()
+
+    def create(self, validated_data):
+        chars = validated_data.pop("characteristics", [])
+        product_id = validated_data.pop("product_id")
+        sku = SKU.objects.create(product_id=product_id, **validated_data)
+        self._save_characteristics(sku, chars)
+        return sku
+
+
+class SKUUpdateSerializer(SKUBaseWriteSerializer):
+    """PUT /skus/{id} — без product_id."""
+    pass
+
+
+# ---------- Product ----------
 
 class ProductReadSerializer(serializers.ModelSerializer):
     category = CategoryRefSerializer()
     images = ImageSerializer(many=True)
     characteristics = CharacteristicValueSerializer(many=True)
     skus = SKUReadSerializer(many=True)
+    blocked = serializers.BooleanField(read_only=True)
+    blocking_reason = serializers.SerializerMethodField()
+    field_reports = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = (
-            "id",
-            "title",
-            "slug",
-            "description",
-            "status",
-            "category",
-            "images",
-            "characteristics",
-            "skus",
+            "id", "title", "description", "status",
+            "deleted", "blocked", "category",
+            "images", "characteristics", "skus",
+            "blocking_reason", "field_reports",
         )
+
+    def get_blocking_reason(self, obj):
+        if obj.status == Product.Status.BLOCKED and obj.blocking_reason:
+            return BlockingReasonReadSerializer(
+                obj.blocking_reason, context={"product": obj}
+            ).data
+        return None
+
+    def get_field_reports(self, obj):
+        if obj.status == Product.Status.BLOCKED:
+            return obj.field_reports or []
+        return []
 
 
 class ProductWriteSerializer(serializers.Serializer):
-    title = serializers.CharField(max_length=500)
-    slug = serializers.SlugField(max_length=255)
-    description = serializers.CharField(required=False, default="", allow_blank=True)
+    """POST /products и PUT /products/{id} (канон-flow B2B-1, B2B-3)."""
+    title = serializers.CharField(max_length=255, min_length=1)
+    description = serializers.CharField(max_length=5000, min_length=1)
     category_id = serializers.UUIDField()
-    images = ImageSerializer(many=True, required=False, default=list)
+    images = ImageSerializer(many=True, min_length=1)  # missing_images_returns_400
     characteristics = CharacteristicValueSerializer(many=True, required=False, default=list)
+    slug = serializers.SlugField(max_length=255, required=False)
 
     def validate_category_id(self, value):
         if not Category.objects.filter(id=value).exists():
-            raise serializers.ValidationError("Category not found.")
+            raise serializers.ValidationError("Category not found")
         return value
 
     def _save_images(self, product, images_data):
@@ -118,18 +181,19 @@ class ProductWriteSerializer(serializers.Serializer):
         ])
 
     def create(self, validated_data):
+        import uuid as _uuid
         images_data = validated_data.pop("images", [])
         characteristics_data = validated_data.pop("characteristics", [])
         seller = self.context["seller"]
-
         category_id = validated_data.pop("category_id")
 
-        product = Product.objects.create(
-            seller=seller,
-            category_id=category_id,
-            **validated_data,
-        )
+        # slug опциональный — генерируем уникальный fallback
+        if not validated_data.get("slug"):
+            validated_data["slug"] = f"p-{_uuid.uuid4().hex[:12]}"
 
+        product = Product.objects.create(
+            seller=seller, category_id=category_id, **validated_data
+        )
         self._save_images(product, images_data)
         self._save_characteristics(product, characteristics_data)
         return product
@@ -143,89 +207,18 @@ class ProductWriteSerializer(serializers.Serializer):
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-
         instance.save()
 
         if images_data is not None:
             instance.images.all().delete()
             self._save_images(instance, images_data)
-
         if characteristics_data is not None:
             instance.characteristics.all().delete()
             self._save_characteristics(instance, characteristics_data)
-
         return instance
 
 
-class SKUBaseWriteSerializer(serializers.Serializer):
-    name = serializers.CharField(max_length=500)
-    price_cents = serializers.IntegerField(min_value=0)
-    active_quantity = serializers.IntegerField(min_value=0, default=0)
-    is_enabled = serializers.BooleanField(default=True)
-    characteristics = CharacteristicValueSerializer(many=True, required=False, default=list)
-    images = ImageSerializer(many=True, required=False, default=list)
-
-    def _save_characteristics(self, sku, data):
-        SKUCharacteristic.objects.bulk_create([
-            SKUCharacteristic(sku=sku, **ch) for ch in data
-        ])
-
-    def _save_images(self, sku, data):
-        SKUImage.objects.bulk_create([
-            SKUImage(sku=sku, **img) for img in data
-        ])
-
-    def update(self, instance, validated_data):
-        characteristics_data = validated_data.pop("characteristics", None)
-        images_data = validated_data.pop("images", None)
-
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-
-        instance.save()
-
-        if characteristics_data is not None:
-            instance.characteristics.all().delete()
-            self._save_characteristics(instance, characteristics_data)
-
-        if images_data is not None:
-            instance.images.all().delete()
-            self._save_images(instance, images_data)
-
-        return instance
-
-
-class SKUWriteSerializer(SKUBaseWriteSerializer):
-    product_id = serializers.UUIDField()
-
-    def validate_product_id(self, value):
-        seller = self.context.get("seller")
-        qs = Product.objects.filter(id=value)
-
-        if not qs.exists():
-            raise serializers.ValidationError("Product not found.")
-
-        if seller and not qs.filter(seller=seller).exists():
-            raise serializers.ValidationError("You do not own this product.")
-
-        return value
-
-    def create(self, validated_data):
-        characteristics_data = validated_data.pop("characteristics", [])
-        images_data = validated_data.pop("images", [])
-        product_id = validated_data.pop("product_id")
-
-        sku = SKU.objects.create(product_id=product_id, **validated_data)
-
-        self._save_characteristics(sku, characteristics_data)
-        self._save_images(sku, images_data)
-
-        return sku
-
-
-class SKUUpdateSerializer(SKUBaseWriteSerializer):
-    pass
-
+# ---------- Invoice (без изменений по логике, оставлено как было) ----------
 
 class InvoiceLineWriteSerializer(serializers.Serializer):
     sku_id = serializers.UUIDField()
@@ -248,18 +241,11 @@ class InvoiceWriteSerializer(serializers.Serializer):
     def create(self, validated_data):
         lines_data = validated_data["lines"]
         seller = self.context["seller"]
-
         invoice = Invoice.objects.create(seller=seller)
-
         InvoiceLine.objects.bulk_create([
-            InvoiceLine(
-                invoice=invoice,
-                sku_id=line["sku_id"],
-                quantity=line["quantity"],
-            )
+            InvoiceLine(invoice=invoice, sku_id=line["sku_id"], quantity=line["quantity"])
             for line in lines_data
         ])
-
         return invoice
 
 
