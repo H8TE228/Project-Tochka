@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from seller_cabinet.exceptions import HardBlockedForbidden, NotOwner
+from seller_cabinet.exceptions import AlreadyDeleted, HardBlockedForbidden, NotOwner
 from seller_cabinet.permissions import IsSeller
 
 from .models import Product, SKU, Seller, Invoice, Category
@@ -22,7 +22,12 @@ from .serializers import (
     InvoiceAcceptSerializer,
     CategorySerializer,
 )
-from .services import transition_on_first_sku, transition_on_edit
+from .services import (
+    transition_on_first_sku,
+    transition_on_edit,
+    publish_to_moderation,
+    publish_product_deleted_to_b2c,
+)
 
 
 def get_or_create_seller(user) -> Seller:
@@ -82,6 +87,31 @@ class ProductDetailView(APIView):
         if product.seller_id != seller.id:
             raise Http404()
         return Response(ProductReadSerializer(product).data)
+
+    def delete(self, request, product_id):
+        seller = get_or_create_seller(request.user)
+        product = get_object_or_404(Product, pk=product_id)
+
+        if product.seller_id != seller.id:
+            raise NotOwner(detail={
+                "code": "NOT_OWNER",
+                "message": "Product does not belong to the authenticated seller",
+            })
+
+        if product.deleted:
+            raise AlreadyDeleted(detail={
+                "code": "INVALID_REQUEST",
+                "message": "Product already deleted",
+            })
+
+        with transaction.atomic():
+            sku_ids = list(product.skus.values_list("id", flat=True))
+            product.deleted = True
+            product.save(update_fields=["deleted", "updated_at"])
+            publish_to_moderation("DELETED", product)
+            publish_product_deleted_to_b2c(product, sku_ids)
+
+        return Response({"ok": True})
 
     def put(self, request, product_id):
         seller = get_or_create_seller(request.user)
@@ -196,6 +226,21 @@ class InvoiceCreateView(APIView):
         seller = get_or_create_seller(request.user)
         serializer = InvoiceWriteSerializer(data=request.data, context={"seller": seller})
         serializer.is_valid(raise_exception=True)
+
+        # Business validation: ownership + MODERATED status (канон B2B-6)
+        for item in serializer.validated_data["items"]:
+            sku = SKU.objects.select_related("product").get(id=item["sku_id"])
+            if sku.product.seller_id != seller.id:
+                raise NotOwner(detail={
+                    "code": "NOT_OWNER",
+                    "message": "One or more SKUs do not belong to the authenticated seller",
+                })
+            if sku.product.status != Product.Status.MODERATED:
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "Invoice can only be created for MODERATED products"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         invoice = serializer.save()
         return Response(InvoiceReadSerializer(invoice).data, status=status.HTTP_201_CREATED)
 

@@ -231,20 +231,20 @@ class InvoiceLineWriteSerializer(serializers.Serializer):
 
 
 class InvoiceWriteSerializer(serializers.Serializer):
-    lines = InvoiceLineWriteSerializer(many=True)
+    items = InvoiceLineWriteSerializer(many=True)
 
-    def validate_lines(self, value):
+    def validate_items(self, value):
         if not value:
-            raise serializers.ValidationError("Invoice must have at least one line.")
+            raise serializers.ValidationError("At least one item is required.")
         return value
 
     def create(self, validated_data):
-        lines_data = validated_data["lines"]
+        items_data = validated_data["items"]
         seller = self.context["seller"]
         invoice = Invoice.objects.create(seller=seller)
         InvoiceLine.objects.bulk_create([
-            InvoiceLine(invoice=invoice, sku_id=line["sku_id"], quantity=line["quantity"])
-            for line in lines_data
+            InvoiceLine(invoice=invoice, sku_id=item["sku_id"], quantity=item["quantity"])
+            for item in items_data
         ])
         return invoice
 
@@ -252,18 +252,26 @@ class InvoiceWriteSerializer(serializers.Serializer):
 class InvoiceLineReadSerializer(serializers.ModelSerializer):
     sku_id = serializers.UUIDField(source="sku.id")
     sku_name = serializers.CharField(source="sku.name")
+    accepted_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = InvoiceLine
-        fields = ("id", "sku_id", "sku_name", "quantity")
+        fields = ("sku_id", "sku_name", "quantity", "accepted_quantity")
+
+    def get_accepted_quantity(self, obj):
+        return None
 
 
 class InvoiceReadSerializer(serializers.ModelSerializer):
-    lines = InvoiceLineReadSerializer(many=True)
+    items = InvoiceLineReadSerializer(many=True, source="lines")
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Invoice
-        fields = ("id", "created_at", "accepted_at", "lines")
+        fields = ("id", "status", "created_at", "items")
+
+    def get_status(self, obj):
+        return "PENDING" if obj.accepted_at is None else "ACCEPTED"
 
 
 class InvoiceAcceptSerializer(serializers.Serializer):
