@@ -48,6 +48,7 @@ MOD_URL = os.getenv("MOD_URL", "http://moderation:8002")
 B2C_URL = os.getenv("B2C_URL", "http://b2c:8003")
 B2B_TO_MOD_KEY = os.getenv("B2B_TO_MOD_KEY", "dev-b2b-to-mod-key")
 B2B_TO_B2C_KEY = os.getenv("B2B_TO_B2C_KEY", "dev-b2b-to-b2c-key")
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

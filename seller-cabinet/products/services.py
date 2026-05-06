@@ -9,7 +9,7 @@ import requests
 from django.conf import settings
 from django.db import transaction
 
-from .models import Product
+from .models import Product, SKU, BlockingReason
 
 log = logging.getLogger(__name__)
 EVENT_TIMEOUT_SEC = 3
@@ -66,6 +66,38 @@ def publish_product_deleted_to_b2c(product: Product, sku_ids: list[str]) -> None
     url = f"{settings.B2C_URL}/api/v1/events/product"
     key = settings.B2B_TO_B2C_KEY
     transaction.on_commit(lambda: _post_event(url, payload, key))
+
+
+def publish_sku_out_of_stock_to_b2c(sku: SKU) -> None:
+    payload = {
+        "idempotency_key": str(uuid.uuid4()),
+        "event": "SKU_OUT_OF_STOCK",
+        "sku_id": str(sku.id),
+        "product_id": str(sku.product_id),
+        "date": _iso_now(),
+    }
+    url = f"{settings.B2C_URL}/api/v1/events/product"
+    key = settings.B2B_TO_B2C_KEY
+    transaction.on_commit(lambda: _post_event(url, payload, key))
+
+
+def publish_product_blocked_to_b2c(product: Product) -> None:
+    payload = {
+        "idempotency_key": str(uuid.uuid4()),
+        "event": "PRODUCT_BLOCKED",
+        "product_id": str(product.id),
+        "date": _iso_now(),
+    }
+    url = f"{settings.B2C_URL}/api/v1/events/product"
+    key = settings.B2B_TO_B2C_KEY
+    transaction.on_commit(lambda: _post_event(url, payload, key))
+
+
+def resolve_blocking_reason(reason_text: str | None) -> BlockingReason | None:
+    if not reason_text:
+        return None
+    reason, _ = BlockingReason.objects.get_or_create(title=reason_text.strip()[:500])
+    return reason
 
 
 # ---- State machine ----

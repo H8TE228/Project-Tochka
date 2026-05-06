@@ -76,6 +76,14 @@ class SKUReadSerializer(serializers.ModelSerializer):
         )
 
 
+class SKUCatalogSerializer(serializers.ModelSerializer):
+    """Публичный B2C-каталог: без cost_price и reserved_quantity."""
+
+    class Meta:
+        model = SKU
+        fields = ("id", "name", "price", "discount", "image", "active_quantity")
+
+
 class SKUBaseWriteSerializer(serializers.Serializer):
     """Общая база для POST /skus и PUT /skus/{id} (канон-flow B2B-2, B2B-3)."""
     name = serializers.CharField(max_length=255, min_length=1)
@@ -154,6 +162,37 @@ class ProductReadSerializer(serializers.ModelSerializer):
         if obj.status == Product.Status.BLOCKED:
             return obj.field_reports or []
         return []
+
+
+class ProductCatalogSerializer(serializers.ModelSerializer):
+    skus = SKUCatalogSerializer(many=True)
+
+    class Meta:
+        model = Product
+        fields = ("id", "slug", "title", "description", "category", "skus")
+
+
+class ReserveItemSerializer(serializers.Serializer):
+    sku_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+
+
+class ReserveCommandSerializer(serializers.Serializer):
+    items = ReserveItemSerializer(many=True, min_length=1)
+    idempotency_key = serializers.UUIDField()
+
+
+class ModerationEventSerializer(serializers.Serializer):
+    class Status(serializers.ChoiceField):
+        def __init__(self, **kwargs):
+            super().__init__(choices=["MODERATED", "BLOCKED"], **kwargs)
+
+    sku_id = serializers.UUIDField()
+    status = Status()
+    hard_block = serializers.BooleanField()
+    field_reports = serializers.JSONField(required=False, allow_null=True)
+    blocking_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    idempotency_key = serializers.UUIDField()
 
 
 class ProductWriteSerializer(serializers.Serializer):

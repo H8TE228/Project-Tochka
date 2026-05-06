@@ -10,6 +10,9 @@ urlpatterns = [
     
     path("invoices", views.InvoiceCreateView.as_view()),
     path("invoices/accept", views.InvoiceAcceptView.as_view()),
+    path("reserve", views.ReserveView.as_view()),
+    path("unreserve", views.UnreserveView.as_view()),
+    path("events/moderation", views.ModerationEventApplyView.as_view()),
     
     path("categories", views.CategoryListCreateView.as_view()),
     path("categories/<uuid:category_id>", views.CategoryDetailView.as_view()),
