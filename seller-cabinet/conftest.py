@@ -2,6 +2,7 @@ import uuid
 
 import pytest
 from rest_framework.test import APIClient
+from django.conf import settings
 
 from products.models import Category, Product, SKU, Seller
 from seller_cabinet.authentication import TokenUser
@@ -42,6 +43,19 @@ def token_user(seller):
 def api_client(token_user):
     client = APIClient()
     client.force_authenticate(user=token_user)
+    return client
+
+
+@pytest.fixture
+def service_key(settings):
+    settings.SERVICE_API_KEY = "test-service-key"
+    return settings.SERVICE_API_KEY
+
+
+@pytest.fixture
+def service_api_client(service_key):
+    client = APIClient()
+    client.credentials(HTTP_X_SERVICE_KEY=service_key)
     return client
 
 

@@ -179,3 +179,43 @@ class InvoiceLine(models.Model):
 
     def __str__(self):
         return f"{self.invoice} — {self.sku} x{self.quantity}"
+
+
+class ProcessedRequest(models.Model):
+    """Idempotency журнал сервисных команд reserve/unreserve."""
+
+    class Action(models.TextChoices):
+        RESERVE = "RESERVE", "Reserve"
+        UNRESERVE = "UNRESERVE", "Unreserve"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    action = models.CharField(max_length=20, choices=Action.choices)
+    idempotency_key = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["action", "idempotency_key"],
+                name="uniq_processed_request_action_idempotency",
+            ),
+        ]
+
+
+class ProcessedModerationEvent(models.Model):
+    """Idempotency журнал примененных moderation-решений per SKU."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    sku = models.ForeignKey(
+        SKU, on_delete=models.CASCADE, related_name="processed_moderation_events"
+    )
+    idempotency_key = models.UUIDField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sku", "idempotency_key"],
+                name="uniq_processed_moderation_event_sku_idempotency",
+            ),
+        ]

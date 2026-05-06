@@ -8,15 +8,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from seller_cabinet.exceptions import AlreadyDeleted, HardBlockedForbidden, NotOwner
-from seller_cabinet.permissions import IsSeller
+from seller_cabinet.permissions import IsSeller, HasValidServiceKey
 
-from .models import Product, SKU, Seller, Invoice, Category
+from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, ProcessedModerationEvent
 from .serializers import (
     ProductReadSerializer,
+    ProductCatalogSerializer,
     ProductWriteSerializer,
     SKUWriteSerializer,
     SKUUpdateSerializer,
     SKUReadSerializer,
+    ReserveCommandSerializer,
+    ModerationEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
     InvoiceAcceptSerializer,
@@ -27,6 +30,9 @@ from .services import (
     transition_on_edit,
     publish_to_moderation,
     publish_product_deleted_to_b2c,
+    publish_sku_out_of_stock_to_b2c,
+    publish_product_blocked_to_b2c,
+    resolve_blocking_reason,
 )
 
 
@@ -52,6 +58,13 @@ class ProductCreateView(APIView):
     """POST /api/v1/products — US-B2B-01 (канон-flow B2B-1)."""
     permission_classes = [IsSeller]
 
+    def get_permissions(self):
+        # ADR: keep backward compatibility for seller-cabinet GET /products,
+        # while enabling canonical B2C catalog access on the same endpoint via X-Service-Key.
+        if self.request.method == "GET" and self.request.headers.get("X-Service-Key"):
+            return [HasValidServiceKey()]
+        return super().get_permissions()
+
     def post(self, request):
         seller = get_or_create_seller(request.user)
         serializer = ProductWriteSerializer(data=request.data, context={"seller": seller})
@@ -60,6 +73,38 @@ class ProductCreateView(APIView):
         return Response(ProductReadSerializer(product).data, status=status.HTTP_201_CREATED)
 
     def get(self, request):
+        if request.headers.get("X-Service-Key"):
+            ids_raw = request.query_params.get("ids")
+            ids = [x.strip() for x in ids_raw.split(",")] if ids_raw else []
+            queryset = Product.objects.filter(
+                deleted=False,
+                status=Product.Status.MODERATED,
+                skus__active_quantity__gt=0,
+            ).exclude(status=Product.Status.HARD_BLOCKED).distinct()
+            if ids:
+                queryset = queryset.filter(skus__id__in=ids)
+            queryset = queryset.select_related("category").prefetch_related(
+                "skus",
+            )
+            visible_products = []
+            for product in queryset:
+                visible_skus = [
+                    sku for sku in product.skus.all()
+                    if (not ids or str(sku.id) in ids) and sku.active_quantity > 0
+                ]
+                if not visible_skus:
+                    continue
+                product.visible_skus = visible_skus
+                visible_products.append(product)
+
+            data = ProductCatalogSerializer(visible_products, many=True).data
+            for item, product in zip(data, visible_products):
+                item["skus"] = [
+                    sku for sku in item["skus"]
+                    if any(str(vs.id) == sku["id"] for vs in product.visible_skus)
+                ]
+            return Response(data)
+
         seller = get_or_create_seller(request.user)
         products = (
             Product.objects.filter(seller=seller, deleted=False)
@@ -102,6 +147,12 @@ class ProductDetailView(APIView):
             raise AlreadyDeleted(detail={
                 "code": "INVALID_REQUEST",
                 "message": "Product already deleted",
+            })
+
+        if product.status == Product.Status.HARD_BLOCKED:
+            raise HardBlockedForbidden(detail={
+                "code": "FORBIDDEN",
+                "message": "Cannot delete hard-blocked product",
             })
 
         with transaction.atomic():
@@ -305,3 +356,147 @@ class CategoryDetailView(APIView):
             )
         category.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ReserveView(APIView):
+    permission_classes = [HasValidServiceKey]
+
+    def post(self, request):
+        serializer = ReserveCommandSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        items = serializer.validated_data["items"]
+        idem_key = serializer.validated_data["idempotency_key"]
+
+        if ProcessedRequest.objects.filter(
+            action=ProcessedRequest.Action.RESERVE, idempotency_key=idem_key
+        ).exists():
+            return Response({"ok": True}, status=status.HTTP_200_OK)
+
+        with transaction.atomic():
+            sku_ids = [item["sku_id"] for item in items]
+            skus = {
+                sku.id: sku
+                for sku in SKU.objects.select_related("product").select_for_update().filter(id__in=sku_ids)
+            }
+            if len(skus) != len(sku_ids):
+                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+
+            for item in items:
+                sku = skus[item["sku_id"]]
+                if sku.active_quantity < item["quantity"]:
+                    return Response(
+                        {"code": "INSUFFICIENT_STOCK", "message": "Insufficient active quantity"},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            out_of_stock_skus = []
+            for item in items:
+                sku = skus[item["sku_id"]]
+                sku.active_quantity -= item["quantity"]
+                sku.reserved_quantity += item["quantity"]
+                sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
+                if sku.active_quantity == 0:
+                    out_of_stock_skus.append(sku)
+
+            ProcessedRequest.objects.create(
+                action=ProcessedRequest.Action.RESERVE,
+                idempotency_key=idem_key,
+            )
+            for sku in out_of_stock_skus:
+                publish_sku_out_of_stock_to_b2c(sku)
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class UnreserveView(APIView):
+    permission_classes = [HasValidServiceKey]
+
+    def post(self, request):
+        serializer = ReserveCommandSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        items = serializer.validated_data["items"]
+        idem_key = serializer.validated_data["idempotency_key"]
+
+        if ProcessedRequest.objects.filter(
+            action=ProcessedRequest.Action.UNRESERVE, idempotency_key=idem_key
+        ).exists():
+            return Response({"ok": True}, status=status.HTTP_200_OK)
+
+        with transaction.atomic():
+            sku_ids = [item["sku_id"] for item in items]
+            skus = {
+                sku.id: sku
+                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
+            }
+            if len(skus) != len(sku_ids):
+                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+
+            for item in items:
+                sku = skus[item["sku_id"]]
+                if sku.reserved_quantity < item["quantity"]:
+                    return Response(
+                        {"code": "INVALID_REQUEST", "message": "Cannot unreserve more than reserved"},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            for item in items:
+                sku = skus[item["sku_id"]]
+                sku.active_quantity += item["quantity"]
+                sku.reserved_quantity -= item["quantity"]
+                sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
+
+            ProcessedRequest.objects.create(
+                action=ProcessedRequest.Action.UNRESERVE,
+                idempotency_key=idem_key,
+            )
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class ModerationEventApplyView(APIView):
+    permission_classes = [HasValidServiceKey]
+
+    def post(self, request):
+        serializer = ModerationEventSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        with transaction.atomic():
+            sku = get_object_or_404(
+                SKU.objects.select_related("product").select_for_update(), id=data["sku_id"]
+            )
+            if ProcessedModerationEvent.objects.filter(
+                sku=sku, idempotency_key=data["idempotency_key"]
+            ).exists():
+                return Response({"ok": True}, status=status.HTTP_200_OK)
+
+            product = sku.product
+            if data["status"] == "MODERATED":
+                product.status = Product.Status.MODERATED
+                product.blocking_reason = None
+                product.moderator_comment = ""
+                product.field_reports = []
+            else:
+                product.status = (
+                    Product.Status.HARD_BLOCKED if data["hard_block"] else Product.Status.BLOCKED
+                )
+                product.blocking_reason = resolve_blocking_reason(data.get("blocking_reason"))
+                product.moderator_comment = data.get("blocking_reason") or ""
+                product.field_reports = data.get("field_reports") or []
+                publish_product_blocked_to_b2c(product)
+
+            product.save(
+                update_fields=[
+                    "status",
+                    "blocking_reason",
+                    "moderator_comment",
+                    "field_reports",
+                    "updated_at",
+                ]
+            )
+            ProcessedModerationEvent.objects.create(
+                sku=sku,
+                idempotency_key=data["idempotency_key"],
+            )
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
