@@ -1,8 +1,10 @@
 services:
-  seller-cabinet:
-    build: .
+  neomarket:
+    build:
+      context: ..
+      dockerfile: neomarket/Dockerfile
     ports:
-      - "8001:8001"
+      - "8000:8000"
     environment:
       SECRET_KEY: ${SECRET_KEY}
       DEBUG: ${DEBUG:-True}
@@ -10,12 +12,7 @@ services:
       DB_PORT: 5432
       DB_USER: ${DB_USER:-postgres}
       DB_PASS: ${DB_PASS:-postgres}
-      DB_NAME: ${DB_NAME:-seller_cabinet}
-      MOD_URL: ${MOD_URL:-http://moderation:8002}
-      B2C_URL: ${B2C_URL:-http://buyer-cabinet:8003}
-      B2B_TO_MOD_KEY: ${B2B_TO_MOD_KEY:-dev-b2b-to-mod-key}
-      B2B_TO_B2C_KEY: ${B2B_TO_B2C_KEY:-dev-b2b-to-b2c-key}
-      SERVICE_API_KEY: ${SERVICE_API_KEY:-dev-service-api-key}
+      DB_NAME: ${DB_NAME:-neomarket}
     depends_on:
       db:
         condition: service_healthy
@@ -24,13 +21,13 @@ services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${DB_NAME:-seller_cabinet}
+      POSTGRES_DB: ${DB_NAME:-neomarket}
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASS:-postgres}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-seller_cabinet}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-neomarket}"]
       interval: 5s
       timeout: 5s
       retries: 5

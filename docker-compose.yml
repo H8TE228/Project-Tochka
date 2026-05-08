@@ -1,0 +1,89 @@
+services:
+  neomarket:
+    extends:
+      file: ./neomarket/docker-compose.yml
+      service: neomarket
+    build:
+      context: .
+      dockerfile: neomarket/Dockerfile
+    environment:
+      DB_HOST: neomarket-db
+      DB_NAME: ${NEOMARKET_DB_NAME:-neomarket}
+    depends_on: !override
+      neomarket-db:
+        condition: service_healthy
+
+  seller-cabinet:
+    extends:
+      file: ./seller-cabinet/docker-compose.yml
+      service: seller-cabinet
+    build:
+      context: ./seller-cabinet
+    environment:
+      DB_HOST: seller-db
+      DB_NAME: ${SELLER_DB_NAME:-seller_cabinet}
+    depends_on: !override
+      seller-db:
+        condition: service_healthy
+
+  buyer-cabinet:
+    extends:
+      file: ./buyer-cabinet/docker-compose.yml
+      service: buyer-cabinet
+    build:
+      context: ./buyer-cabinet
+    environment:
+      DB_HOST: buyer-db
+      DB_NAME: ${BUYER_DB_NAME:-buyer_cabinet}
+    depends_on: !override
+      buyer-db:
+        condition: service_healthy
+      seller-cabinet:
+        condition: service_started
+
+  neomarket-db:
+    extends:
+      file: ./neomarket/docker-compose.yml
+      service: db
+    environment:
+      POSTGRES_DB: ${NEOMARKET_DB_NAME:-neomarket}
+    volumes: !override
+      - neomarket_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${NEOMARKET_DB_NAME:-neomarket}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  seller-db:
+    extends:
+      file: ./seller-cabinet/docker-compose.yml
+      service: db
+    environment:
+      POSTGRES_DB: ${SELLER_DB_NAME:-seller_cabinet}
+    volumes: !override
+      - seller_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${SELLER_DB_NAME:-seller_cabinet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  buyer-db:
+    extends:
+      file: ./buyer-cabinet/docker-compose.yml
+      service: db
+    environment:
+      POSTGRES_DB: ${BUYER_DB_NAME:-buyer_cabinet}
+    volumes: !override
+      - buyer_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${BUYER_DB_NAME:-buyer_cabinet}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  neomarket_postgres_data:
+  seller_postgres_data:
+  buyer_postgres_data:
