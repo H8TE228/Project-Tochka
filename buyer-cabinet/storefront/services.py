@@ -113,3 +113,46 @@ def catalog_response(upstream_data, limit: int, offset: int) -> dict:
         "limit": limit,
         "offset": offset,
     }
+
+
+def product_card_response(product: dict) -> dict:
+    return {
+        "id": product.get("id"),
+        "slug": product.get("slug", ""),
+        "title": product.get("title", ""),
+        "description": product.get("description", ""),
+        "images": [
+            {
+                "url": image.get("url", ""),
+                "ordering": int(image.get("ordering") or 0),
+            }
+            for image in product.get("images") or []
+        ],
+        "status": product.get("status", ""),
+        "characteristics": [
+            {
+                "name": characteristic.get("name", ""),
+                "value": characteristic.get("value", ""),
+            }
+            for characteristic in product.get("characteristics") or []
+        ],
+        "skus": [
+            {
+                "id": sku.get("id"),
+                "name": sku.get("name", ""),
+                "price": int(sku.get("price") or 0),
+                "discount": int(sku.get("discount") or 0),
+                "image": sku.get("image", ""),
+                "active_quantity": int(sku.get("active_quantity") or 0),
+                "in_stock": int(sku.get("active_quantity") or 0) > 0,
+                "characteristics": [
+                    {
+                        "name": characteristic.get("name", ""),
+                        "value": characteristic.get("value", ""),
+                    }
+                    for characteristic in sku.get("characteristics") or []
+                ],
+            }
+            for sku in product.get("skus") or []
+        ],
+    }

@@ -9,6 +9,7 @@ from .services import (
     b2b_get,
     catalog_response,
     normalize_pagination,
+    product_card_response,
     query_params_as_pairs,
     validate_search,
     validate_sort,
@@ -83,3 +84,27 @@ class CatalogFacetsView(APIView):
                 status=status.HTTP_502_BAD_GATEWAY,
             )
         return Response(upstream_response.json(), status=upstream_response.status_code)
+
+
+class ProductCardView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, product_id):
+        try:
+            upstream_response = b2b_get(f"/api/v1/products/{product_id}", query_params_as_pairs(request.query_params))
+        except UpstreamUnavailable:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Product temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if upstream_response.status_code >= 500:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Product temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        if upstream_response.status_code >= 400:
+            return Response(upstream_response.json(), status=upstream_response.status_code)
+
+        return Response(product_card_response(upstream_response.json()))
