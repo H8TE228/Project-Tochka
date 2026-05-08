@@ -47,7 +47,7 @@ else:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-B2C_URL = os.getenv("B2C_URL", "http://buyer-cabinet:8004")
+B2B_URL = os.getenv("B2B_URL", "http://seller-cabinet:8001")
 SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
 
 REST_FRAMEWORK = {
