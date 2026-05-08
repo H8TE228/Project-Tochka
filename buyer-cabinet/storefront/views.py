@@ -10,6 +10,7 @@ from .services import (
     catalog_response,
     normalize_pagination,
     query_params_as_pairs,
+    validate_search,
     validate_sort,
 )
 
@@ -29,6 +30,7 @@ class ProductCatalogView(APIView):
     def get(self, request):
         try:
             validate_sort(request.query_params.get("sort"))
+            validate_search(request.query_params.get("search"))
         except ValueError as exc:
             return Response(
                 {"code": "INVALID_REQUEST", "message": str(exc)},

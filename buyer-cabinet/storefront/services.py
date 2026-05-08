@@ -8,6 +8,8 @@ ALLOWED_SORTS = ("rating", "popularity", "price_asc", "price_desc", "date_desc",
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 B2B_TIMEOUT_SEC = 3
+MIN_SEARCH_LENGTH = 3
+MAX_SEARCH_LENGTH = 255
 
 
 class UpstreamUnavailable(Exception):
@@ -31,6 +33,16 @@ def validate_sort(sort: str | None) -> str:
         allowed = ", ".join(ALLOWED_SORTS)
         raise ValueError(f"Invalid sort parameter. Allowed: {allowed}")
     return sort
+
+
+def validate_search(search: str | None) -> str | None:
+    if search is None or search == "":
+        return None
+    if len(search) < MIN_SEARCH_LENGTH:
+        raise ValueError("Search query must be at least 3 characters")
+    if len(search) > MAX_SEARCH_LENGTH:
+        raise ValueError("Search query must be at most 255 characters")
+    return search
 
 
 def query_params_as_pairs(query_params) -> list[tuple[str, str]]:
