@@ -78,8 +78,12 @@ class CatalogTests(SimpleTestCase):
 
         _, kwargs = get_mock.call_args
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
-        self.assertIn(("filters[brand]", "Apple"), kwargs["params"])
-        self.assertIn(("sort", "price_asc"), kwargs["params"])
+        self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/public/products")
+        self.assertIn(("category_id", "123e4567-e89b-12d3-a456-426614174001"), kwargs["params"])
+        self.assertIn(("page", "1"), kwargs["params"])
+        self.assertIn(("size", "1"), kwargs["params"])
+        self.assertNotIn(("filters[brand]", "Apple"), kwargs["params"])
+        self.assertNotIn(("sort", "price_asc"), kwargs["params"])
 
     @patch("storefront.services.requests.get")
     def test_facets_return_counts_per_filter_value(self, get_mock):

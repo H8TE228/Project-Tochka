@@ -23,7 +23,9 @@ class SearchTests(SimpleTestCase):
     def test_search_returns_matching_products(self, get_mock):
         get_mock.return_value = FakeResponse(
             200,
-            [
+            {
+                "total": 1,
+                "items": [
                 {
                     "id": "770e8400-e29b-41d4-a716-446655440002",
                     "title": "iPhone 15 Pro Max",
@@ -38,7 +40,8 @@ class SearchTests(SimpleTestCase):
                         }
                     ],
                 }
-            ],
+                ],
+            },
         )
 
         response = self.client.get(
@@ -60,8 +63,12 @@ class SearchTests(SimpleTestCase):
 
         _, kwargs = get_mock.call_args
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
+        self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/public/products")
         self.assertIn(("search", "iPhone"), kwargs["params"])
-        self.assertIn(("filters[brand]", "Apple"), kwargs["params"])
+        self.assertIn(("category_id", "123e4567-e89b-12d3-a456-426614174001"), kwargs["params"])
+        self.assertIn(("page", "1"), kwargs["params"])
+        self.assertIn(("size", "20"), kwargs["params"])
+        self.assertNotIn(("filters[brand]", "Apple"), kwargs["params"])
 
     @patch("storefront.services.requests.get")
     def test_short_query_returns_400(self, get_mock):
@@ -74,7 +81,7 @@ class SearchTests(SimpleTestCase):
 
     @patch("storefront.services.requests.get")
     def test_special_chars_do_not_break_query(self, get_mock):
-        get_mock.return_value = FakeResponse(200, [])
+        get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
 
         response = self.client.get("/api/v1/products", {"search": "iPhone%15_'", "sort": "rating"})
 
@@ -84,7 +91,7 @@ class SearchTests(SimpleTestCase):
 
     @patch("storefront.services.requests.get")
     def test_empty_results_returns_200(self, get_mock):
-        get_mock.return_value = FakeResponse(200, [])
+        get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
 
         response = self.client.get("/api/v1/products", {"search": "coffee"})
 

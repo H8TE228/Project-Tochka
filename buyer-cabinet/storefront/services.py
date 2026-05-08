@@ -53,6 +53,21 @@ def query_params_as_pairs(query_params) -> list[tuple[str, str]]:
     return pairs
 
 
+def public_products_params(query_params, limit: int, offset: int) -> list[tuple[str, str]]:
+    params = []
+    page = offset // limit + 1
+
+    for key, values in query_params.lists():
+        if key in ("limit", "offset", "sort") or key.startswith("filters["):
+            continue
+        for value in values:
+            params.append((key, value))
+
+    params.append(("page", str(page)))
+    params.append(("size", str(limit)))
+    return params
+
+
 def b2b_get(path: str, params: list[tuple[str, str]]):
     url = urljoin(settings.B2B_URL.rstrip("/") + "/", path.lstrip("/"))
     try:
@@ -69,7 +84,7 @@ def b2b_get(path: str, params: list[tuple[str, str]]):
 
 def product_short(product: dict) -> dict:
     skus = product.get("skus") or []
-    visible_skus = [sku for sku in skus if int(sku.get("active_quantity") or 0) > 0]
+    visible_skus = [sku for sku in skus if stock_quantity(sku) > 0]
     priced_skus = visible_skus or skus
 
     min_price = 0
@@ -98,11 +113,12 @@ def product_short(product: dict) -> dict:
 
 def catalog_response(upstream_data, limit: int, offset: int) -> dict:
     if isinstance(upstream_data, dict) and "items" in upstream_data:
+        upstream_items = upstream_data.get("items", [])
         return {
-            "items": upstream_data.get("items", []),
-            "total_count": int(upstream_data.get("total_count", len(upstream_data.get("items", [])))),
-            "limit": int(upstream_data.get("limit", limit)),
-            "offset": int(upstream_data.get("offset", offset)),
+            "items": [product_short(product) for product in upstream_items],
+            "total_count": int(upstream_data.get("total_count", upstream_data.get("total", len(upstream_items)))),
+            "limit": limit,
+            "offset": offset,
         }
 
     products = upstream_data if isinstance(upstream_data, list) else []
@@ -113,6 +129,10 @@ def catalog_response(upstream_data, limit: int, offset: int) -> dict:
         "limit": limit,
         "offset": offset,
     }
+
+
+def stock_quantity(sku: dict) -> int:
+    return int(sku.get("active_quantity", sku.get("stock_quantity") or 0) or 0)
 
 
 def product_card_response(product: dict) -> dict:
@@ -143,8 +163,8 @@ def product_card_response(product: dict) -> dict:
                 "price": int(sku.get("price") or 0),
                 "discount": int(sku.get("discount") or 0),
                 "image": sku.get("image", ""),
-                "active_quantity": int(sku.get("active_quantity") or 0),
-                "in_stock": int(sku.get("active_quantity") or 0) > 0,
+                "active_quantity": stock_quantity(sku),
+                "in_stock": stock_quantity(sku) > 0,
                 "characteristics": [
                     {
                         "name": characteristic.get("name", ""),

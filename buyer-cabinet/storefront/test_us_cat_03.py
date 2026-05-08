@@ -39,7 +39,7 @@ def product_payload():
                 "reserved_quantity": 2,
                 "discount": 0,
                 "image": "/s3/iphone15-black-256.jpg",
-                "active_quantity": 10,
+                "stock_quantity": 10,
                 "characteristics": [{"name": "Цвет", "value": "Черный"}],
             },
             {
@@ -50,7 +50,7 @@ def product_payload():
                 "reserved_quantity": 1,
                 "discount": 500000,
                 "image": "/s3/iphone15-white-256.jpg",
-                "active_quantity": 0,
+                "stock_quantity": 0,
                 "characteristics": [{"name": "Цвет", "value": "Белый"}],
             },
         ],
@@ -80,6 +80,7 @@ class ProductCardTests(SimpleTestCase):
         self.assertEqual(response.data["skus"][1]["discount"], 500000)
 
         _, kwargs = get_mock.call_args
+        self.assertEqual(get_mock.call_args.args[0], f"http://b2b.test/api/public/products/{PRODUCT_ID}")
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
 
     @patch("storefront.services.requests.get")

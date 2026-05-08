@@ -10,6 +10,7 @@ from .services import (
     catalog_response,
     normalize_pagination,
     product_card_response,
+    public_products_params,
     query_params_as_pairs,
     validate_search,
     validate_sort,
@@ -47,7 +48,10 @@ class ProductCatalogView(APIView):
         offset = normalize_pagination(request.query_params.get("offset"), default=0, minimum=0)
 
         try:
-            upstream_response = b2b_get("/api/v1/products", query_params_as_pairs(request.query_params))
+            upstream_response = b2b_get(
+                "/api/public/products",
+                public_products_params(request.query_params, limit=limit, offset=offset),
+            )
         except UpstreamUnavailable:
             return Response(
                 {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"},
@@ -92,7 +96,10 @@ class ProductCardView(APIView):
 
     def get(self, request, product_id):
         try:
-            upstream_response = b2b_get(f"/api/v1/products/{product_id}", query_params_as_pairs(request.query_params))
+            upstream_response = b2b_get(
+                f"/api/public/products/{product_id}",
+                query_params_as_pairs(request.query_params),
+            )
         except UpstreamUnavailable:
             return Response(
                 {"code": "UPSTREAM_UNAVAILABLE", "message": "Product temporarily unavailable"},
