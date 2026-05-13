@@ -182,6 +182,14 @@ class ReserveCommandSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
 
 
+class FulfillCommandSerializer(serializers.Serializer):
+    """POST /api/v1/fulfill — списание резерва при доставке (order_id = idempotency key)."""
+
+    order_id = serializers.UUIDField()
+    sku_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+
+
 class ModerationEventSerializer(serializers.Serializer):
     class Status(serializers.ChoiceField):
         def __init__(self, **kwargs):
