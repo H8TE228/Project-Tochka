@@ -11,6 +11,7 @@ urlpatterns = [
     path("invoices", views.InvoiceCreateView.as_view()),
     path("invoices/accept", views.InvoiceAcceptView.as_view()),
     path("reserve", views.ReserveView.as_view()),
+    path("fulfill", views.FulfillView.as_view()),
     path("unreserve", views.UnreserveView.as_view()),
     path("events/moderation", views.ModerationEventApplyView.as_view()),
     
