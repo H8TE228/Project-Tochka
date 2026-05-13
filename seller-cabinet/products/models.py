@@ -182,11 +182,12 @@ class InvoiceLine(models.Model):
 
 
 class ProcessedRequest(models.Model):
-    """Idempotency журнал сервисных команд reserve/unreserve."""
+    """Idempotency журнал сервисных команд reserve/unreserve/fulfill."""
 
     class Action(models.TextChoices):
         RESERVE = "RESERVE", "Reserve"
         UNRESERVE = "UNRESERVE", "Unreserve"
+        FULFILL = "FULFILL", "Fulfill"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     action = models.CharField(max_length=20, choices=Action.choices)
