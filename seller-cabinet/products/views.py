@@ -19,6 +19,7 @@ from .serializers import (
     SKUUpdateSerializer,
     SKUReadSerializer,
     ReserveCommandSerializer,
+    FulfillCommandSerializer,
     ModerationEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
@@ -404,6 +405,54 @@ class ReserveView(APIView):
             )
             for sku in out_of_stock_skus:
                 publish_sku_out_of_stock_to_b2c(sku)
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
+
+
+class FulfillView(APIView):
+    """
+    POST /api/v1/fulfill — доставка заказа: уменьшить reserved_quantity, active_quantity не трогать.
+    Идемпотентность по order_id.
+    """
+    permission_classes = [HasValidServiceKey]
+
+    def post(self, request):
+        serializer = FulfillCommandSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["order_id"]
+        sku_id = serializer.validated_data["sku_id"]
+        quantity = serializer.validated_data["quantity"]
+
+        if ProcessedRequest.objects.filter(
+            action=ProcessedRequest.Action.FULFILL, idempotency_key=order_id
+        ).exists():
+            return Response({"ok": True}, status=status.HTTP_200_OK)
+
+        with transaction.atomic():
+            try:
+                sku = SKU.objects.select_for_update().get(pk=sku_id)
+            except SKU.DoesNotExist:
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "SKU not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            if sku.reserved_quantity < quantity:
+                return Response(
+                    {
+                        "code": "INVALID_REQUEST",
+                        "message": "Cannot fulfill more than reserved",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            sku.reserved_quantity -= quantity
+            sku.save(update_fields=["reserved_quantity", "updated_at"])
+
+            ProcessedRequest.objects.create(
+                action=ProcessedRequest.Action.FULFILL,
+                idempotency_key=order_id,
+            )
 
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
