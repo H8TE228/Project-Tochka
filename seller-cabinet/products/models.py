@@ -128,6 +128,7 @@ class SKU(models.Model):
     active_quantity = models.IntegerField(default=0)
     reserved_quantity = models.IntegerField(default=0)
     is_enabled = models.BooleanField(default=True)
+    deleted = models.BooleanField(default=False)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
