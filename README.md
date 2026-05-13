@@ -1,234 +1,48 @@
-# Seller Cabinet (B2B)
+# Project-Tochka
 
-Микросервис кабинета продавца для NeoMarket. Управление товарами, SKU, накладными и категориями.
+## Установка
 
----
+Установите зависимости приложения командой:
 
-## Стек
-
-- Python 3.12
-- Django 5
-- Django REST Framework
-- PostgreSQL 16
-- JWT
-
----
-
-## Базовый URL
-
-/api/v1/
-
----
-
-## Аутентификация
-
-```http
-Authorization: Bearer <token>
+```sh
+pip install -r requirements.txt
 ```
 
-Требуется роль: `seller`
+Создайте файл `.env` на основе `.env.example` и пропишите переменные окружения
 
----
-
-## Эндпоинты (реализовано)
-
-
-| Метод  | URL                       | Описание                  |
-| ------ | ------------------------- | ------------------------- |
-| GET    | `/api/v1/categories`      | Получить список категорий |
-| POST   | `/api/v1/categories`      | Создать категорию         |
-| GET    | `/api/v1/categories/{id}` | Получить категорию        |
-| PUT    | `/api/v1/categories/{id}` | Обновить категорию        |
-| DELETE | `/api/v1/categories/{id}` | Удалить категорию         |
-| GET    | `/api/v1/products`        | Список товаров продавца   |
-| POST   | `/api/v1/products`        | Создать товар             |
-| GET    | `/api/v1/products/{id}`   | Получить товар            |
-| PUT    | `/api/v1/products/{id}`   | Обновить товар            |
-| POST   | `/api/v1/skus`            | Создать SKU               |
-| PUT    | `/api/v1/skus/{id}`       | Обновить SKU              |
-| POST   | `/api/v1/invoices`        | Создать накладную         |
-| POST   | `/api/v1/invoices/accept` | Принять накладную         |
-
-
-### Сервисные вызовы (X-Service-Key)
-
-
-| Метод | URL                         | Описание                                                             |
-| ----- | --------------------------- | -------------------------------------------------------------------- |
-| POST  | `/api/v1/reserve`           | Резервирование остатков под заказ                                    |
-| POST  | `/api/v1/fulfill`           | Списание резерва при доставке (уменьшает только `reserved_quantity`) |
-| POST  | `/api/v1/unreserve`         | Отмена резерва                                                       |
-| POST  | `/api/v1/events/moderation` | Применение решения модерации                                         |
-
-
-Заголовок: `X-Service-Key: <SERVICE_API_KEY>`.
-
----
-
-# Примеры запросов
-
-## Категории
-
-### Создать категорию
-
-```bash
-curl -X POST http://localhost:8001/api/v1/categories \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Одежда"}'
+```
+# Пример
+SECRET_KEY=<ключ>
+DEBUG=True
+DB_HOST=localhost
+DB_PORT=5433
+DB_USER=myuser
+DB_PASS=mypassword
+DB_NAME=mydatabase
 ```
 
----
-
-## Товары
-
-### Создать товар
-
-```bash
-curl -X POST http://localhost:8001/api/v1/products \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Футболка",
-    "slug": "futbolka-black",
-    "description": "Черная футболка",
-    "category_id": "uuid",
-    "images": [],
-    "characteristics": []
-  }'
+Сгененировать ключ можно командой
+```sh
+python -c 'from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())'
 ```
 
----
-
-### Получить список товаров (seller-cabinet)
-
-Только товары текущего продавца (из JWT). Параметр `seller_id` в query **игнорируется**. Удалённые товары приходят с `deleted: true`. Поле `status` в ответе: `ACTIVE` | `BLOCKED` | `DELETED` (агрегат по `deleted` и внутреннему статусу).
-
-**Пагинация:** `limit` (по умолчанию 20, макс. 100), `offset` (по умолчанию 0).
-
-**Фильтры:** `status=ACTIVE|BLOCKED|DELETED` (без параметра — все свои товары, включая удалённые), `search` — подстрока в `title` без учёта регистра.
-
-Ответ: `items`, `total`, `limit`, `offset`. В каждом элементе: `skus_count`, `total_active_quantity` (сумма `active_quantity` по SKU).
-
-В JWT по желанию можно передать `seller_id` (UUID записи `Seller`) — он должен совпадать с продавцом, привязанным к `user_id` из того же токена.
-
-```bash
-curl "http://localhost:8001/api/v1/products?limit=20&offset=0&status=ACTIVE&search=phone" \
-  -H "Authorization: Bearer <token>"
+Развернуть PostgreSQL можно из Docker
+```sh
+docker run --name my-postgres1 \
+  -e POSTGRES_PASSWORD=mypassword \
+  -e POSTGRES_USER=myuser \
+  -e POSTGRES_DB=mydatabase \
+  -p 5433:5432 \
+  -d postgres:16
 ```
 
-Пример тела ответа:
-
-```json
-{
-  "items": [
-    {
-      "id": "uuid",
-      "title": "Смартфон",
-      "description": "...",
-      "status": "ACTIVE",
-      "deleted": false,
-      "created_at": "2024-01-01T00:00:00Z",
-      "updated_at": "2024-01-01T00:00:00Z",
-      "skus_count": 3,
-      "total_active_quantity": 150
-    }
-  ],
-  "total": 42,
-  "limit": 20,
-  "offset": 0
-}
+Применение миграций для БД
+```sh
+python manage.py migrate
 ```
-
-**Каталог B2C** по тому же пути: `GET /api/v1/products` с заголовком `X-Service-Key` (без Bearer) — другой формат ответа, без пагинации продавца.
-
----
-
-## SKU
-
-### Создать SKU
-
-```bash
-curl -X POST http://localhost:8001/api/v1/skus \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_id": "uuid",
-    "name": "XL",
-    "price_cents": 1000,
-    "active_quantity": 10,
-    "is_enabled": true
-  }'
-```
-
----
-
-### Обновить SKU
-
-```bash
-curl -X PUT http://localhost:8001/api/v1/skus/{id} \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "XXL",
-    "price_cents": 1200,
-    "active_quantity": 20
-  }'
-```
-
----
-
-## Накладные
-
-### Создать накладную
-
-```bash
-curl -X POST http://localhost:8001/api/v1/invoices \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "lines": [
-      {"sku_id": "uuid", "quantity": 10}
-    ]
-  }'
-```
-
----
-
-### Принять накладную
-
-```bash
-curl -X POST http://localhost:8001/api/v1/invoices/accept \
-  -H "Authorization: Bearer <token>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "invoice_id": "uuid"
-  }'
-```
-
----
-
-## Fulfill (доставка заказа)
-
-Сервис заказов вызывает после фактической отгрузки: списывается только резерв, свободный остаток (`active_quantity`) не меняется. Повтор с тем же `order_id` безопасен (идемпотентность).
-
-```bash
-curl -X POST http://localhost:8001/api/v1/fulfill \
-  -H "X-Service-Key: <service-api-key>" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "order_id": "uuid",
-    "sku_id": "uuid",
-    "quantity": 1
-  }'
-```
-
----
 
 ## Запуск
 
-```bash
-docker compose up --build
+```sh
+python manage.py runserver
 ```
-
-Сервис: [http://localhost:8001](http://localhost:8001)
