@@ -1,7 +1,7 @@
 import uuid
 
 from django.db import transaction
-from django.db.models import Count, IntegerField, Sum, Value
+from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -138,6 +138,7 @@ class ProductCreateView(APIView):
                 deleted=False,
                 status=Product.Status.MODERATED,
                 skus__active_quantity__gt=0,
+                skus__deleted=False,
             ).exclude(status=Product.Status.HARD_BLOCKED).distinct()
             if ids:
                 queryset = queryset.filter(skus__id__in=ids)
@@ -148,7 +149,9 @@ class ProductCreateView(APIView):
             for product in queryset:
                 visible_skus = [
                     sku for sku in product.skus.all()
-                    if (not ids or str(sku.id) in ids) and sku.active_quantity > 0
+                    if not sku.deleted
+                    and (not ids or str(sku.id) in ids)
+                    and sku.active_quantity > 0
                 ]
                 if not visible_skus:
                     continue
@@ -168,9 +171,9 @@ class ProductCreateView(APIView):
         qs = (
             Product.objects.filter(seller=seller)
             .annotate(
-                skus_count=Count("skus", distinct=True),
+                skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
                 total_active_quantity=Coalesce(
-                    Sum("skus__active_quantity"),
+                    Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
                     Value(0),
                     output_field=IntegerField(),
                 ),
@@ -220,7 +223,21 @@ class ProductDetailView(APIView):
     def get(self, request, product_id):
         # Канон-flow B2B-5: чужой товар → 404 (не раскрываем)
         seller = get_or_create_seller(request.user)
-        product = get_object_or_404(Product, pk=product_id, deleted=False)
+        product = get_object_or_404(
+            Product.objects.filter(deleted=False)
+            .select_related("category", "blocking_reason")
+            .prefetch_related(
+                "images",
+                "characteristics",
+                Prefetch(
+                    "skus",
+                    queryset=SKU.objects.filter(deleted=False).prefetch_related(
+                        "characteristics"
+                    ),
+                ),
+            ),
+            pk=product_id,
+        )
         if product.seller_id != seller.id:
             raise Http404()
         return Response(ProductReadSerializer(product).data)
@@ -318,7 +335,7 @@ class SKUCreateView(APIView):
             })
 
         with transaction.atomic():
-            is_first_sku = not product.skus.exists()
+            is_first_sku = not product.skus.filter(deleted=False).exists()
             sku = serializer.save()
             if is_first_sku:
                 transition_on_first_sku(product)
@@ -327,7 +344,7 @@ class SKUCreateView(APIView):
 
 
 class SKUDetailView(APIView):
-    """PUT /api/v1/skus/{id} — US-B2B-03."""
+    """PUT /api/v1/skus/{id} — US-B2B-03; DELETE /api/v1/skus/{id} — soft delete SKU."""
     permission_classes = [IsSeller]
 
     def put(self, request, sku_id):
@@ -335,6 +352,7 @@ class SKUDetailView(APIView):
         sku = get_object_or_404(
             SKU.objects.select_related("product"),
             pk=sku_id,
+            deleted=False,
             product__deleted=False,
         )
 
@@ -359,8 +377,49 @@ class SKUDetailView(APIView):
 
         return Response(SKUReadSerializer(sku).data)
 
+    def delete(self, request, sku_id):
+        """DELETE /api/v1/skus/{id} — soft delete SKU (канон-flow delete-sku)."""
+        seller = get_or_create_seller(request.user)
+        sku = SKU.objects.filter(pk=sku_id, deleted=False).select_related("product").first()
+        if sku is None:
+            return Response({"error": "SKU not found"}, status=status.HTTP_404_NOT_FOUND)
+        if sku.product.seller_id != seller.id:
+            return Response({"error": "SKU not found"}, status=status.HTTP_404_NOT_FOUND)
+        if sku.product.status == Product.Status.HARD_BLOCKED:
+            return Response(
+                {"error": "Cannot delete SKU of HARD_BLOCKED product"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if sku.reserved_quantity != 0:
+            return Response(
+                {
+                    "error": "Cannot delete SKU with active reserves",
+                    "reserved_quantity": sku.reserved_quantity,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
 
-# ---------- Invoice (логика прежняя) ----------
+        product = sku.product
+        prior_status = product.status
+        had_active = sku.active_quantity > 0
+
+        with transaction.atomic():
+            sku.deleted = True
+            sku.save(update_fields=["deleted", "updated_at"])
+            product.save(update_fields=["updated_at"])
+
+            remaining = product.skus.filter(deleted=False).exists()
+            if not remaining and prior_status == Product.Status.ON_MODERATION:
+                product.status = Product.Status.CREATED
+                product.save(update_fields=["status", "updated_at"])
+                publish_to_moderation("DELETED", product)
+            if had_active and prior_status == Product.Status.MODERATED:
+                publish_sku_out_of_stock_to_b2c(sku)
+
+        return Response(
+            {"ok": True, "message": "SKU deleted successfully"},
+            status=status.HTTP_200_OK,
+        )
 
 class InvoiceCreateView(APIView):
     permission_classes = [IsSeller]
@@ -468,7 +527,9 @@ class ReserveView(APIView):
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_related("product").select_for_update().filter(id__in=sku_ids)
+                for sku in SKU.objects.select_related("product").select_for_update().filter(
+                    id__in=sku_ids, deleted=False
+                )
             }
             if len(skus) != len(sku_ids):
                 return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
@@ -521,7 +582,7 @@ class FulfillView(APIView):
 
         with transaction.atomic():
             try:
-                sku = SKU.objects.select_for_update().get(pk=sku_id)
+                sku = SKU.objects.select_for_update().get(pk=sku_id, deleted=False)
             except SKU.DoesNotExist:
                 return Response(
                     {"code": "INVALID_REQUEST", "message": "SKU not found"},
@@ -566,7 +627,7 @@ class UnreserveView(APIView):
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
+                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids, deleted=False)
             }
             if len(skus) != len(sku_ids):
                 return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
