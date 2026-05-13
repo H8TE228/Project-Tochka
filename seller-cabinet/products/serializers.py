@@ -306,7 +306,7 @@ class InvoiceLineWriteSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
     def validate_sku_id(self, value):
-        if not SKU.objects.filter(id=value).exists():
+        if not SKU.objects.filter(id=value, deleted=False).exists():
             raise serializers.ValidationError("SKU not found.")
         return value
 
