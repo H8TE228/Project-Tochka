@@ -46,3 +46,19 @@ python manage.py migrate
 ```sh
 python manage.py runserver
 ```
+
+## Общий Docker Compose
+
+Для совместного запуска сервисов используйте корневой `.env` и корневой `docker-compose.yml`.
+
+```sh
+cp .env.example .env
+docker compose up --build
+```
+
+Будут подняты:
+
+- `neomarket` на `http://localhost:8000`;
+- `seller-cabinet` на `http://localhost:8001`;
+- `buyer-cabinet` на `http://localhost:8003`;
+- отдельные базы `neomarket-db`, `seller-db` и `buyer-db`.

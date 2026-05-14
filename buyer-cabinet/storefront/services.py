@@ -1,0 +1,178 @@
+from urllib.parse import urljoin
+
+import requests
+from django.conf import settings
+
+
+ALLOWED_SORTS = ("rating", "popularity", "price_asc", "price_desc", "date_desc", "discount_desc")
+DEFAULT_LIMIT = 20
+MAX_LIMIT = 100
+B2B_TIMEOUT_SEC = 3
+MIN_SEARCH_LENGTH = 3
+MAX_SEARCH_LENGTH = 255
+
+
+class UpstreamUnavailable(Exception):
+    pass
+
+
+def normalize_pagination(value, default=0, minimum=0, maximum=None) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    number = max(number, minimum)
+    if maximum is not None:
+        number = min(number, maximum)
+    return number
+
+
+def validate_sort(sort: str | None) -> str:
+    sort = sort or "rating"
+    if sort not in ALLOWED_SORTS:
+        allowed = ", ".join(ALLOWED_SORTS)
+        raise ValueError(f"Invalid sort parameter. Allowed: {allowed}")
+    return sort
+
+
+def validate_search(search: str | None) -> str | None:
+    if search is None or search == "":
+        return None
+    if len(search) < MIN_SEARCH_LENGTH:
+        raise ValueError("Search query must be at least 3 characters")
+    if len(search) > MAX_SEARCH_LENGTH:
+        raise ValueError("Search query must be at most 255 characters")
+    return search
+
+
+def query_params_as_pairs(query_params) -> list[tuple[str, str]]:
+    pairs = []
+    for key, values in query_params.lists():
+        for value in values:
+            pairs.append((key, value))
+    return pairs
+
+
+def public_products_params(query_params, limit: int, offset: int) -> list[tuple[str, str]]:
+    params = []
+    page = offset // limit + 1
+
+    for key, values in query_params.lists():
+        if key in ("limit", "offset", "sort") or key.startswith("filters["):
+            continue
+        for value in values:
+            params.append((key, value))
+
+    params.append(("page", str(page)))
+    params.append(("size", str(limit)))
+    return params
+
+
+def b2b_get(path: str, params: list[tuple[str, str]]):
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", path.lstrip("/"))
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
+
+
+def product_short(product: dict) -> dict:
+    skus = product.get("skus") or []
+    visible_skus = [sku for sku in skus if stock_quantity(sku) > 0]
+    priced_skus = visible_skus or skus
+
+    min_price = 0
+    if priced_skus:
+        min_price = min(
+            int(sku.get("price") or 0) - int(sku.get("discount") or 0)
+            for sku in priced_skus
+        )
+
+    image = ""
+    images = product.get("images") or []
+    if images:
+        image = images[0].get("url", "")
+    elif priced_skus:
+        image = priced_skus[0].get("image", "")
+
+    return {
+        "id": product.get("id"),
+        "title": product.get("title", ""),
+        "image": image,
+        "price": min_price,
+        "in_stock": bool(visible_skus),
+        "is_in_cart": False,
+    }
+
+
+def catalog_response(upstream_data, limit: int, offset: int) -> dict:
+    if isinstance(upstream_data, dict) and "items" in upstream_data:
+        upstream_items = upstream_data.get("items", [])
+        return {
+            "items": [product_short(product) for product in upstream_items],
+            "total_count": int(upstream_data.get("total_count", upstream_data.get("total", len(upstream_items)))),
+            "limit": limit,
+            "offset": offset,
+        }
+
+    products = upstream_data if isinstance(upstream_data, list) else []
+    items = [product_short(product) for product in products]
+    return {
+        "items": items[offset: offset + limit],
+        "total_count": len(items),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def stock_quantity(sku: dict) -> int:
+    return int(sku.get("active_quantity", sku.get("stock_quantity") or 0) or 0)
+
+
+def product_card_response(product: dict) -> dict:
+    return {
+        "id": product.get("id"),
+        "slug": product.get("slug", ""),
+        "title": product.get("title", ""),
+        "description": product.get("description", ""),
+        "images": [
+            {
+                "url": image.get("url", ""),
+                "ordering": int(image.get("ordering") or 0),
+            }
+            for image in product.get("images") or []
+        ],
+        "status": product.get("status", ""),
+        "characteristics": [
+            {
+                "name": characteristic.get("name", ""),
+                "value": characteristic.get("value", ""),
+            }
+            for characteristic in product.get("characteristics") or []
+        ],
+        "skus": [
+            {
+                "id": sku.get("id"),
+                "name": sku.get("name", ""),
+                "price": int(sku.get("price") or 0),
+                "discount": int(sku.get("discount") or 0),
+                "image": sku.get("image", ""),
+                "active_quantity": stock_quantity(sku),
+                "in_stock": stock_quantity(sku) > 0,
+                "characteristics": [
+                    {
+                        "name": characteristic.get("name", ""),
+                        "value": characteristic.get("value", ""),
+                    }
+                    for characteristic in sku.get("characteristics") or []
+                ],
+            }
+            for sku in product.get("skus") or []
+        ],
+    }
