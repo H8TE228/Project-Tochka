@@ -1,6 +1,6 @@
-from rest_framework.permissions import BasePermission
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
+from rest_framework.permissions import BasePermission
 
 
 class IsSeller(BasePermission):
@@ -9,11 +9,9 @@ class IsSeller(BasePermission):
     message = "Only sellers can perform this action."
 
     def has_permission(self, request, view):
-        return bool(
-            request.user
-            and request.user.is_authenticated
-            and getattr(request.user, "role", None) == "seller"
-        )
+        if not (request.user and request.user.is_authenticated):
+            raise NotAuthenticated("Authentication required")
+        return getattr(request.user, "role", None) == "seller"
 
 
 class HasValidServiceKey(BasePermission):

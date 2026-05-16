@@ -1,4 +1,8 @@
-"""US-B2B-01: создание карточки товара. Канон: flows/b2b-flows.md#create-product."""
+"""US-B2B-01: создание карточки товара.
+
+Канон: flows/b2b-flows.md#create-product
+OpenAPI: neomarket-protocols/b2b/neomarket-b2b.yaml — POST /api/v1/products
+"""
 import uuid
 
 import pytest
@@ -18,17 +22,29 @@ def _valid_payload(category_id):
     }
 
 
-def test_create_product_returns_201_with_created_status(api_client, category):
+def test_create_product_returns_201_with_created_status(api_client, seller, category):
+    """DoD: 201, status=CREATED, skus=[]. Все openapi-required поля присутствуют."""
     resp = api_client.post("/api/v1/products", _valid_payload(category.id), format="json")
     assert resp.status_code == 201
-    assert resp.data["status"] == "CREATED"
-    assert resp.data["skus"] == []
-    assert resp.data["deleted"] is False
-    assert resp.data["blocked"] is False
+
+    data = resp.data
+    assert data["status"] == "CREATED"
+    assert data["skus"] == []
+    assert data["deleted"] is False
+    assert data["blocked"] is False
+
+    # openapi.ProductResponse required поля (закрывает фидбек арбитра по US-B2B-01 п.4)
+    assert "id" in data
+    assert data["seller_id"] == str(seller.auth_user_id)
+    assert data["category_id"] == str(category.id)
+    assert "slug" in data
+    assert "blocking_reason_id" in data
+    assert "moderator_comment" in data
+    assert "created_at" in data
+    assert "updated_at" in data
 
 
 def test_seller_id_taken_from_jwt(api_client, seller, another_seller, category):
-    """seller_id из JWT, попытка передать чужой в body игнорируется."""
     payload = _valid_payload(category.id)
     payload["seller_id"] = str(another_seller.auth_user_id)
 
@@ -38,6 +54,7 @@ def test_seller_id_taken_from_jwt(api_client, seller, another_seller, category):
     product = Product.objects.get(id=resp.data["id"])
     assert product.seller.auth_user_id == seller.auth_user_id
     assert product.seller_id != another_seller.id
+    assert resp.data["seller_id"] == str(seller.auth_user_id)
 
 
 def test_missing_images_returns_400(api_client, category):
@@ -62,7 +79,6 @@ def test_missing_category_returns_400(api_client):
 
 
 def test_invalid_category_id_returns_400(api_client):
-    """Несуществующий category_id → 400, не 500."""
     payload = {
         "title": "X",
         "description": "Y",
