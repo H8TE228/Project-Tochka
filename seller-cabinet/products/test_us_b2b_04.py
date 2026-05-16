@@ -13,8 +13,8 @@ def test_delete_sets_deleted_true(api_client, product_factory):
     product = product_factory(status=Product.Status.MODERATED)
     with patch("products.services._post_event"):
         resp = api_client.delete(f"/api/v1/products/{product.id}")
-    assert resp.status_code == 200
-    assert resp.data == {"ok": True}
+    # openapi B2B: DELETE → 204 No Content, без тела
+    assert resp.status_code == 204
     product.refresh_from_db()
     assert product.deleted is True
 

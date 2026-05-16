@@ -23,7 +23,8 @@ def test_get_moderated_product_returns_full_payload(api_client, product_factory,
     assert data["blocked"] is False
     assert data["blocking_reason"] is None
     assert data["field_reports"] == []
-    assert data["category"]["id"] == str(product.category.id)
+    assert data["category_id"] == str(product.category.id)
+    assert data["seller_id"] == str(product.seller.auth_user_id)
     # Seller cabinet включает cost_price и reserved_quantity (канон B2B-5)
     assert len(data["skus"]) == 1
     sku_data = data["skus"][0]

@@ -32,3 +32,7 @@ class JWTAuthentication(BaseAuthentication):
             raise AuthenticationFailed("Invalid token.")
 
         return TokenUser(payload), token
+    
+    def authenticate_header(self, request):
+        """Возвращает значение WWW-Authenticate, чтобы DRF не конвертировал 401 в 403."""
+        return "Bearer"

@@ -119,15 +119,15 @@ class ProductCreateView(APIView):
 
 
 class ProductDetailView(APIView):
-    """GET/PUT /api/v1/products/{id} — US-B2B-03 (канон-flow B2B-3, B2B-5)."""
+    """GET/PATCH/DELETE /api/v1/products/{id}.
+    PUT поддерживается как алиас на PATCH для backward compat."""
 
     def get_permissions(self):
-        if self.request.method in ("PUT", "DELETE"):
+        if self.request.method in ("PUT", "PATCH", "DELETE"):
             return [IsSeller()]
-        return [IsSeller()]  # GET тоже требует JWT в seller cabinet
+        return [IsSeller()]
 
     def get(self, request, product_id):
-        # Канон-flow B2B-5: чужой товар → 404 (не раскрываем)
         seller = get_or_create_seller(request.user)
         product = get_object_or_404(Product, pk=product_id, deleted=False)
         if product.seller_id != seller.id:
@@ -163,29 +163,32 @@ class ProductDetailView(APIView):
             publish_to_moderation("DELETED", product)
             publish_product_deleted_to_b2c(product, sku_ids)
 
-        return Response({"ok": True})
+        # openapi: DELETE /api/v1/products/{id} → 204 No Content
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def put(self, request, product_id):
+        # PUT → PATCH для backward compat
+        return self.patch(request, product_id)
+
+    def patch(self, request, product_id):
         seller = get_or_create_seller(request.user)
-        # 404 если товар не существует или удалён
         product = get_object_or_404(Product, pk=product_id, deleted=False)
 
-        # 403 NOT_OWNER если чужой (DoD US-B2B-03: edit_others_product_returns_403)
         if product.seller_id != seller.id:
             raise NotOwner(detail={
                 "code": "NOT_OWNER",
                 "message": "Product does not belong to the authenticated seller",
             })
 
-        # 403 FORBIDDEN если HARD_BLOCKED
         if product.status == Product.Status.HARD_BLOCKED:
             raise HardBlockedForbidden(detail={
                 "code": "FORBIDDEN",
                 "message": "Cannot edit hard-blocked product",
             })
 
+        # partial=True — PATCH-семантика по openapi: все поля опциональны
         serializer = ProductWriteSerializer(
-            product, data=request.data, context={"seller": seller}
+            product, data=request.data, partial=True, context={"seller": seller}
         )
         serializer.is_valid(raise_exception=True)
 
@@ -236,10 +239,13 @@ class SKUCreateView(APIView):
 
 
 class SKUDetailView(APIView):
-    """PUT /api/v1/skus/{id} — US-B2B-03."""
+    """PUT/PATCH /api/v1/skus/{id}. PUT делегирует на PATCH."""
     permission_classes = [IsSeller]
 
     def put(self, request, sku_id):
+        return self.patch(request, sku_id)
+
+    def patch(self, request, sku_id):
         seller = get_or_create_seller(request.user)
         sku = get_object_or_404(
             SKU.objects.select_related("product"),
@@ -259,7 +265,7 @@ class SKUDetailView(APIView):
                 "message": "Cannot edit SKU of hard-blocked product",
             })
 
-        serializer = SKUUpdateSerializer(sku, data=request.data)
+        serializer = SKUUpdateSerializer(sku, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
@@ -269,7 +275,7 @@ class SKUDetailView(APIView):
         return Response(SKUReadSerializer(sku).data)
 
 
-# ---------- Invoice (логика прежняя) ----------
+# ---------- Invoice ----------
 
 class InvoiceCreateView(APIView):
     permission_classes = [IsSeller]
