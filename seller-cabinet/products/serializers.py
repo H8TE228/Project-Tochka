@@ -296,6 +296,40 @@ class ProductCatalogSerializer(serializers.ModelSerializer):
         )
 
 
+def product_seller_list_api_status(product: Product) -> str:
+    """ACTIVE | BLOCKED | DELETED для GET /api/v1/products (seller-cabinet)."""
+    if product.deleted:
+        return "DELETED"
+    if product.status in (Product.Status.BLOCKED, Product.Status.HARD_BLOCKED):
+        return "BLOCKED"
+    return "ACTIVE"
+
+
+class ProductSellerListSerializer(serializers.ModelSerializer):
+    """Список товаров продавца: агрегаты + унифицированный status."""
+
+    status = serializers.SerializerMethodField()
+    skus_count = serializers.IntegerField(read_only=True)
+    total_active_quantity = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Product
+        fields = (
+            "id",
+            "title",
+            "description",
+            "status",
+            "deleted",
+            "created_at",
+            "updated_at",
+            "skus_count",
+            "total_active_quantity",
+        )
+
+    def get_status(self, obj: Product) -> str:
+        return product_seller_list_api_status(obj)
+
+
 class ReserveItemSerializer(serializers.Serializer):
     sku_id = serializers.UUIDField()
     quantity = serializers.IntegerField(min_value=1)

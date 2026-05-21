@@ -13,6 +13,8 @@ class TokenUser:
         self.id = payload.get("user_id")
         self.email = payload.get("email", "")
         self.role = payload.get("role", "")
+        # Опционально: UUID кабинета продавца (должен совпадать с Seller, привязанным к user_id)
+        self.seller_id = payload.get("seller_id")
 
 
 class JWTAuthentication(BaseAuthentication):

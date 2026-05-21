@@ -1,6 +1,8 @@
 import uuid
 
 from django.db import transaction
+from django.db.models import Count, IntegerField, Sum, Value
+from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
@@ -14,6 +16,7 @@ from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, P
 from .serializers import (
     ProductReadSerializer,
     ProductCatalogSerializer,
+    ProductSellerListSerializer,
     ProductWriteSerializer,
     SKUWriteSerializer,
     SKUUpdateSerializer,
@@ -37,20 +40,74 @@ from .services import (
 )
 
 
-def get_or_create_seller(user) -> Seller:
-    """Resolve Seller from JWT user. Поддерживает int (BigAutoField auth) и UUID (тесты)."""
+def _auth_uuid_from_user(user) -> uuid.UUID:
+    """user_id из JWT → UUID для Seller.auth_user_id."""
     raw_id = user.id
     if isinstance(raw_id, uuid.UUID):
-        auth_uuid = raw_id
-    elif isinstance(raw_id, int):
-        auth_uuid = uuid.UUID(int=raw_id)
-    else:
-        auth_uuid = uuid.UUID(str(raw_id))
+        return raw_id
+    if isinstance(raw_id, int):
+        return uuid.UUID(int=raw_id)
+    return uuid.UUID(str(raw_id))
+
+
+def get_or_create_seller(user) -> Seller:
+    """Resolve Seller from JWT user. Поддерживает int (BigAutoField auth) и UUID (тесты)."""
+    auth_uuid = _auth_uuid_from_user(user)
     seller, _ = Seller.objects.get_or_create(
         auth_user_id=auth_uuid,
         defaults={"name": getattr(user, "email", str(auth_uuid))},
     )
     return seller
+
+
+def resolve_seller_for_jwt(user) -> Seller:
+    """
+    Продавец из JWT: при наличии seller_id в claims — только если Seller.id совпадает
+    и привязан к тому же auth_user_id (защита от подмены).
+    """
+    auth_uuid = _auth_uuid_from_user(user)
+    claim_sid = getattr(user, "seller_id", None)
+    if claim_sid is not None:
+        sid = claim_sid if isinstance(claim_sid, uuid.UUID) else uuid.UUID(str(claim_sid))
+        return get_object_or_404(Seller, id=sid, auth_user_id=auth_uuid)
+    seller, _ = Seller.objects.get_or_create(
+        auth_user_id=auth_uuid,
+        defaults={"name": getattr(user, "email", str(auth_uuid))},
+    )
+    return seller
+
+
+def _parse_list_limit_offset(request) -> tuple[int, int]:
+    try:
+        limit = int(request.query_params.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = int(request.query_params.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    return limit, offset
+
+
+def _apply_seller_list_status_filter(qs, status_raw: str):
+    """Фильтр ?status=ACTIVE|BLOCKED|DELETED."""
+    s = (status_raw or "").strip().upper()
+    if not s:
+        return qs
+    if s == "DELETED":
+        return qs.filter(deleted=True)
+    if s == "BLOCKED":
+        return qs.filter(
+            deleted=False,
+            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
+        )
+    if s == "ACTIVE":
+        return qs.filter(deleted=False).exclude(
+            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
+        )
+    return None  # invalid
 
 
 # ---------- Products ----------
@@ -106,16 +163,50 @@ class ProductCreateView(APIView):
                 ]
             return Response(data)
 
-        seller = get_or_create_seller(request.user)
-        products = (
-            Product.objects.filter(seller=seller, deleted=False)
-            .select_related("category", "blocking_reason")
-            .prefetch_related(
-                "images", "characteristics",
-                "skus__characteristics",
+        # Seller-cabinet: только свои товары; ?seller_id= игнорируется (IDOR).
+        seller = resolve_seller_for_jwt(request.user)
+        qs = (
+            Product.objects.filter(seller=seller)
+            .annotate(
+                skus_count=Count("skus", distinct=True),
+                total_active_quantity=Coalesce(
+                    Sum("skus__active_quantity"),
+                    Value(0),
+                    output_field=IntegerField(),
+                ),
             )
+            .order_by("-created_at")
         )
-        return Response(ProductReadSerializer(products, many=True).data)
+
+        search = (request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(title__icontains=search)
+
+        status_raw = request.query_params.get("status", "")
+        filtered = _apply_seller_list_status_filter(qs, status_raw)
+        if filtered is None and status_raw.strip():
+            return Response(
+                {
+                    "code": "INVALID_REQUEST",
+                    "message": "status must be one of: ACTIVE, BLOCKED, DELETED",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if filtered is not None:
+            qs = filtered
+
+        total = qs.count()
+        limit, offset = _parse_list_limit_offset(request)
+        page = qs[offset : offset + limit]
+
+        return Response(
+            {
+                "items": ProductSellerListSerializer(page, many=True).data,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
 
 
 class ProductDetailView(APIView):
