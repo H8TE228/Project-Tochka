@@ -410,32 +410,31 @@ class InvoiceWriteSerializer(serializers.Serializer):
 class InvoiceLineReadSerializer(serializers.ModelSerializer):
     sku_id = serializers.UUIDField(source="sku.id")
     sku_name = serializers.CharField(source="sku.name")
-    accepted_quantity = serializers.SerializerMethodField()
 
     class Meta:
         model = InvoiceLine
-        fields = ("sku_id", "sku_name", "quantity", "accepted_quantity")
-
-    def get_accepted_quantity(self, obj):
-        return None
+        fields = ("id", "sku_id", "sku_name", "quantity", "accepted_quantity")
 
 
 class InvoiceReadSerializer(serializers.ModelSerializer):
     items = InvoiceLineReadSerializer(many=True, source="lines")
-    status = serializers.SerializerMethodField()
+    seller_id = serializers.UUIDField(source="seller.auth_user_id")
 
     class Meta:
         model = Invoice
-        fields = ("id", "status", "created_at", "items")
+        fields = ("id", "seller_id", "status", "created_at", "updated_at", "items")
 
-    def get_status(self, obj):
-        return "PENDING" if obj.accepted_at is None else "ACCEPTED"
+
+class InvoiceAcceptLineSerializer(serializers.Serializer):
+    line_id = serializers.UUIDField()
+    accepted_quantity = serializers.IntegerField(min_value=0)
 
 
 class InvoiceAcceptSerializer(serializers.Serializer):
     invoice_id = serializers.UUIDField()
+    items = InvoiceAcceptLineSerializer(many=True, min_length=1)
 
     def validate_invoice_id(self, value):
-        if not Invoice.objects.filter(id=value, accepted_at__isnull=True).exists():
-            raise serializers.ValidationError("Invoice not found or already accepted.")
+        if not Invoice.objects.filter(id=value, status=Invoice.Status.CREATED).exists():
+            raise serializers.ValidationError("Invoice not found or already processed.")
         return value

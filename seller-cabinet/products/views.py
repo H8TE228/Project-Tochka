@@ -310,17 +310,35 @@ class InvoiceAcceptView(APIView):
         serializer = InvoiceAcceptSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        invoice = get_object_or_404(
-            Invoice, pk=serializer.validated_data["invoice_id"], accepted_at__isnull=True
-        )
+        invoice_id = serializer.validated_data["invoice_id"]
+        accept_items = serializer.validated_data["items"]
 
-        for line in invoice.lines.select_related("sku"):
-            line.sku.active_quantity += line.quantity
-            line.sku.save(update_fields=["active_quantity"])
+        invoice = get_object_or_404(Invoice, pk=invoice_id, status=Invoice.Status.CREATED)
 
-        from django.utils import timezone as tz
-        invoice.accepted_at = tz.now()
-        invoice.save(update_fields=["accepted_at"])
+        with transaction.atomic():
+            lines = {
+                line.id: line
+                for line in invoice.lines.select_related("sku").select_for_update()
+            }
+
+            for item in accept_items:
+                line = lines.get(item["line_id"])
+                if line is None:
+                    continue
+                aq = item["accepted_quantity"]
+                line.accepted_quantity = aq
+                line.save(update_fields=["accepted_quantity"])
+                line.sku.active_quantity += aq
+                line.sku.save(update_fields=["active_quantity", "updated_at"])
+
+            fully_accepted = all(
+                line.accepted_quantity is not None and line.accepted_quantity >= line.quantity
+                for line in lines.values()
+            )
+            invoice.status = (
+                Invoice.Status.ACCEPTED if fully_accepted else Invoice.Status.PARTIALLY_ACCEPTED
+            )
+            invoice.save(update_fields=["status", "updated_at"])
 
         return Response(InvoiceReadSerializer(invoice).data)
 

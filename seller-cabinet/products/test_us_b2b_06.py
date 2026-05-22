@@ -6,7 +6,7 @@ from products.models import Product
 pytestmark = pytest.mark.django_db
 
 
-def test_create_invoice_with_moderated_sku_returns_201(api_client, product_factory, sku_factory):
+def test_create_invoice_with_moderated_sku_returns_201(api_client, seller, product_factory, sku_factory):
     product = product_factory(status=Product.Status.MODERATED)
     sku = sku_factory(product)
 
@@ -19,10 +19,14 @@ def test_create_invoice_with_moderated_sku_returns_201(api_client, product_facto
     assert resp.status_code == 201
     data = resp.data
     assert "id" in data
-    assert data["status"] == "PENDING"
+    assert data["status"] == "CREATED"
+    assert "seller_id" in data
+    assert str(data["seller_id"]) == str(seller.auth_user_id)
     assert "created_at" in data
+    assert "updated_at" in data
     assert len(data["items"]) == 1
     item = data["items"][0]
+    assert "id" in item
     assert item["sku_id"] == str(sku.id)
     assert item["sku_name"] == sku.name
     assert item["quantity"] == 10
