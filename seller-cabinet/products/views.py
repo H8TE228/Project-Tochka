@@ -4,6 +4,7 @@ from django.db import transaction
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -404,7 +405,10 @@ class ReserveView(APIView):
                 for sku in SKU.objects.select_related("product").select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
                 sku = skus[item["sku_id"]]
@@ -502,7 +506,10 @@ class UnreserveView(APIView):
                 for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
                 sku = skus[item["sku_id"]]
@@ -529,15 +536,42 @@ class UnreserveView(APIView):
 class ModerationEventApplyView(APIView):
     permission_classes = [HasValidServiceKey]
 
+    def _first_validation_message(self, detail):
+        if isinstance(detail, dict):
+            first = next(iter(detail.values()))
+            if isinstance(first, list):
+                return str(first[0])
+            return str(first)
+        if isinstance(detail, list):
+            return str(detail[0])
+        return str(detail)
+
     def post(self, request):
         serializer = ModerationEventSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except ValidationError as exc:
+            return Response(
+                {
+                    "code": "INVALID_REQUEST",
+                    "message": self._first_validation_message(exc.detail),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         data = serializer.validated_data
 
         with transaction.atomic():
-            sku = get_object_or_404(
-                SKU.objects.select_related("product").select_for_update(), id=data["sku_id"]
-            )
+            try:
+                sku = SKU.objects.select_related("product").select_for_update().get(id=data["sku_id"])
+            except SKU.DoesNotExist:
+                return Response(
+                    {
+                        "code": "PRODUCT_NOT_FOUND",
+                        "message": f"SKU {data['sku_id']} does not exist",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
             if ProcessedModerationEvent.objects.filter(
                 sku=sku, idempotency_key=data["idempotency_key"]
             ).exists():

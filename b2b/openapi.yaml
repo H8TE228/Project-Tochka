@@ -22,6 +22,12 @@ paths:
       responses:
         "200":
           description: Visible products only.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProductPublicResponse"
         "401":
           description: Missing or invalid service key.
   /api/v1/reserve:
@@ -44,8 +50,16 @@ paths:
           description: Reservation applied or idempotent replay.
         "401":
           description: Missing or invalid service key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Insufficient stock for at least one SKU; no changes applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/unreserve:
     post:
       summary: Release reserved SKU quantities
@@ -66,8 +80,16 @@ paths:
           description: Unreserve applied or idempotent replay.
         "400":
           description: Trying to unreserve more than reserved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Missing or invalid service key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/invoices:
     post:
       summary: Create incoming goods invoice
@@ -233,6 +255,118 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/InvoiceItemResponse"
+    ProductImage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        ordering:
+          type: integer
+    ProductCharacteristic:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        value:
+          type: string
+    SKUImage:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+        ordering:
+          type: integer
+    SKUCharacteristic:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        value:
+          type: string
+    SKUPublicResponse:
+      type: object
+      required: [id, product_id, name, price, discount, stock_quantity, active_quantity, article, image, images, characteristics]
+      properties:
+        id:
+          type: string
+          format: uuid
+        product_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        price:
+          type: integer
+        discount:
+          type: integer
+        stock_quantity:
+          type: integer
+        active_quantity:
+          type: integer
+        article:
+          type: string
+          nullable: true
+        image:
+          type: string
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/SKUImage"
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/SKUCharacteristic"
+    ProductPublicResponse:
+      type: object
+      required: [id, seller_id, category_id, name, slug, description, status, images, characteristics, skus, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        seller_id:
+          type: string
+          format: uuid
+        category_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+        images:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductImage"
+        characteristics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductCharacteristic"
+        skus:
+          type: array
+          items:
+            $ref: "#/components/schemas/SKUPublicResponse"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
     ErrorResponse:
       type: object
       properties:
