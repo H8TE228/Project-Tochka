@@ -50,8 +50,16 @@ paths:
           description: Reservation applied or idempotent replay.
         "401":
           description: Missing or invalid service key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: Insufficient stock for at least one SKU; no changes applied.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/unreserve:
     post:
       summary: Release reserved SKU quantities
@@ -72,8 +80,16 @@ paths:
           description: Unreserve applied or idempotent replay.
         "400":
           description: Trying to unreserve more than reserved.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Missing or invalid service key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/invoices:
     post:
       summary: Create incoming goods invoice

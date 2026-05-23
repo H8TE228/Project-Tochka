@@ -404,7 +404,10 @@ class ReserveView(APIView):
                 for sku in SKU.objects.select_related("product").select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
                 sku = skus[item["sku_id"]]
@@ -502,7 +505,10 @@ class UnreserveView(APIView):
                 for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
                 sku = skus[item["sku_id"]]
