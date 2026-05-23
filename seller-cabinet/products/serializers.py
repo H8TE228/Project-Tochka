@@ -281,6 +281,7 @@ class ProductCatalogSerializer(serializers.ModelSerializer):
     """openapi: ProductPublicResponse (B2C каталог, без cost_price у SKU)."""
     seller_id = serializers.UUIDField(source="seller.auth_user_id", read_only=True)
     category_id = serializers.UUIDField(source="category.id", read_only=True)
+    name = serializers.CharField(source="title", read_only=True)
     images = ProductImageOutSerializer(many=True, read_only=True)
     characteristics = ProductCharacteristicOutSerializer(many=True, read_only=True)
     skus = SKUCatalogSerializer(many=True, read_only=True)
@@ -289,7 +290,7 @@ class ProductCatalogSerializer(serializers.ModelSerializer):
         model = Product
         fields = (
             "id", "seller_id", "category_id",
-            "title", "slug", "description",
+            "name", "slug", "description",
             "status",
             "images", "characteristics", "skus",
             "created_at", "updated_at",
