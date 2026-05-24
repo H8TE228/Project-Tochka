@@ -30,9 +30,13 @@ class ProductCatalogView(APIView):
     permission_classes = []
 
     def get(self, request):
+        search = request.query_params.get("q")
+        if search is None:
+            search = request.query_params.get("search")
+
         try:
             validate_sort(request.query_params.get("sort"))
-            validate_search(request.query_params.get("search"))
+            validate_search(search)
         except ValueError as exc:
             return Response(
                 {"code": "INVALID_REQUEST", "message": str(exc)},
@@ -49,7 +53,7 @@ class ProductCatalogView(APIView):
 
         try:
             upstream_response = b2b_get(
-                "/api/public/products",
+                "/api/v1/public/products",
                 public_products_params(request.query_params, limit=limit, offset=offset),
             )
         except UpstreamUnavailable:
@@ -90,6 +94,36 @@ class CatalogFacetsView(APIView):
         return Response(upstream_response.json(), status=upstream_response.status_code)
 
 
+class CategoryFiltersView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, category_id):
+        try:
+            upstream_response = b2b_get(
+                f"/api/v1/categories/{category_id}/filters",
+                query_params_as_pairs(request.query_params),
+            )
+        except UpstreamUnavailable:
+            return Response(
+                {
+                    "code": "UPSTREAM_UNAVAILABLE",
+                    "message": "Category filters temporarily unavailable",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if upstream_response.status_code >= 500:
+            return Response(
+                {
+                    "code": "UPSTREAM_UNAVAILABLE",
+                    "message": "Category filters temporarily unavailable",
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(upstream_response.json(), status=upstream_response.status_code)
+
+
 class ProductCardView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -97,7 +131,7 @@ class ProductCardView(APIView):
     def get(self, request, product_id):
         try:
             upstream_response = b2b_get(
-                f"/api/public/products/{product_id}",
+                f"/api/v1/public/products/{product_id}",
                 query_params_as_pairs(request.query_params),
             )
         except UpstreamUnavailable:

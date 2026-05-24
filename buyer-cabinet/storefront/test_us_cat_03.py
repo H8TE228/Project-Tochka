@@ -2,6 +2,7 @@
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
+from requests import ConnectionError
 from rest_framework.test import APIClient
 
 
@@ -26,8 +27,16 @@ def product_payload():
         "status": "MODERATED",
         "deleted": False,
         "images": [
-            {"url": "https://cdn.neomarket.ru/images/iphone15-front.jpg", "ordering": 0},
-            {"url": "https://cdn.neomarket.ru/images/iphone15-back.jpg", "ordering": 1},
+            {
+                "id": "880e8400-e29b-41d4-a716-446655440001",
+                "url": "https://cdn.neomarket.ru/images/iphone15-front.jpg",
+                "ordering": 0,
+            },
+            {
+                "id": "880e8400-e29b-41d4-a716-446655440002",
+                "url": "https://cdn.neomarket.ru/images/iphone15-back.jpg",
+                "ordering": 1,
+            },
         ],
         "characteristics": [{"name": "Бренд", "value": "Apple"}],
         "skus": [
@@ -39,7 +48,7 @@ def product_payload():
                 "reserved_quantity": 2,
                 "discount": 0,
                 "image": "/s3/iphone15-black-256.jpg",
-                "stock_quantity": 10,
+                "active_quantity": 10,
                 "characteristics": [{"name": "Цвет", "value": "Черный"}],
             },
             {
@@ -50,7 +59,7 @@ def product_payload():
                 "reserved_quantity": 1,
                 "discount": 500000,
                 "image": "/s3/iphone15-white-256.jpg",
-                "stock_quantity": 0,
+                "active_quantity": 0,
                 "characteristics": [{"name": "Цвет", "value": "Белый"}],
             },
         ],
@@ -71,16 +80,28 @@ class ProductCardTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["id"], PRODUCT_ID)
         self.assertEqual(response.data["slug"], "iphone-15-pro-max")
-        self.assertEqual(response.data["title"], "iPhone 15 Pro Max")
+        self.assertEqual(response.data["name"], "iPhone 15 Pro Max")
         self.assertEqual(response.data["description"], "Apple flagship 2024")
+        self.assertEqual(response.data["min_price"], 12999000)
+        self.assertTrue(response.data["has_stock"])
+        self.assertNotIn("title", response.data)
+        self.assertEqual(
+            response.data["images"][0]["id"],
+            "880e8400-e29b-41d4-a716-446655440001",
+        )
         self.assertEqual(response.data["images"][0]["ordering"], 0)
         self.assertEqual(response.data["characteristics"][0], {"name": "Бренд", "value": "Apple"})
         self.assertEqual(len(response.data["skus"]), 2)
         self.assertEqual(response.data["skus"][0]["price"], 12999000)
+        self.assertEqual(response.data["skus"][0]["available_quantity"], 10)
         self.assertEqual(response.data["skus"][1]["discount"], 500000)
+        self.assertEqual(response.data["skus"][1]["available_quantity"], 0)
 
         _, kwargs = get_mock.call_args
-        self.assertEqual(get_mock.call_args.args[0], f"http://b2b.test/api/public/products/{PRODUCT_ID}")
+        self.assertEqual(
+            get_mock.call_args.args[0],
+            f"http://b2b.test/api/v1/public/products/{PRODUCT_ID}",
+        )
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
 
     @patch("storefront.services.requests.get")
@@ -92,6 +113,7 @@ class ProductCardTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("cost_price", response.data["skus"][0])
         self.assertNotIn("reserved_quantity", response.data["skus"][0])
+        self.assertNotIn("active_quantity", response.data["skus"][0])
 
     @patch("storefront.services.requests.get")
     def test_blocked_product_returns_404(self, get_mock):
@@ -114,3 +136,12 @@ class ProductCardTests(SimpleTestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["skus"][0]["in_stock"])
         self.assertFalse(response.data["skus"][1]["in_stock"])
+
+    @patch("storefront.services.requests.get")
+    def test_product_card_b2b_unavailable_returns_502(self, get_mock):
+        get_mock.side_effect = ConnectionError("B2B is down")
+
+        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.data["code"], "UPSTREAM_UNAVAILABLE")

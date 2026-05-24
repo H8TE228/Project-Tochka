@@ -26,31 +26,37 @@ class SearchTests(SimpleTestCase):
             {
                 "total": 1,
                 "items": [
-                {
-                    "id": "770e8400-e29b-41d4-a716-446655440002",
-                    "title": "iPhone 15 Pro Max",
-                    "images": [{"url": "https://cdn.neomarket.ru/images/iphone15.jpg"}],
-                    "skus": [
-                        {
-                            "id": "660e8400-e29b-41d4-a716-446655440001",
-                            "price": 12999000,
-                            "discount": 500000,
-                            "image": "/s3/iphone15.jpg",
-                            "active_quantity": 7,
-                        }
-                    ],
-                }
+                    {
+                        "id": "770e8400-e29b-41d4-a716-446655440002",
+                        "title": "iPhone 15 Pro Max",
+                        "images": [
+                            {
+                                "id": "880e8400-e29b-41d4-a716-446655440001",
+                                "url": "https://cdn.neomarket.ru/images/iphone15.jpg",
+                                "ordering": 0,
+                            }
+                        ],
+                        "skus": [
+                            {
+                                "id": "660e8400-e29b-41d4-a716-446655440001",
+                                "price": 12999000,
+                                "discount": 500000,
+                                "image": "/s3/iphone15.jpg",
+                                "active_quantity": 7,
+                            }
+                        ],
+                    }
                 ],
             },
         )
 
         response = self.client.get(
-            "/api/v1/products",
+            "/api/v1/catalog/products",
             {
-                "search": "iPhone",
+                "q": "iPhone",
                 "category_id": "123e4567-e89b-12d3-a456-426614174001",
-                "filters[brand]": "Apple",
-                "sort": "rating",
+                "filter[brand]": "Apple",
+                "sort": "price_asc",
                 "limit": "20",
                 "offset": "0",
             },
@@ -58,21 +64,22 @@ class SearchTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["total_count"], 1)
-        self.assertEqual(response.data["items"][0]["title"], "iPhone 15 Pro Max")
-        self.assertEqual(response.data["items"][0]["price"], 12499000)
+        self.assertEqual(response.data["items"][0]["name"], "iPhone 15 Pro Max")
+        self.assertEqual(response.data["items"][0]["min_price"], 12999000)
 
         _, kwargs = get_mock.call_args
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
-        self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/public/products")
-        self.assertIn(("search", "iPhone"), kwargs["params"])
+        self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/v1/public/products")
+        self.assertIn(("q", "iPhone"), kwargs["params"])
         self.assertIn(("category_id", "123e4567-e89b-12d3-a456-426614174001"), kwargs["params"])
+        self.assertIn(("filter[brand]", "Apple"), kwargs["params"])
+        self.assertIn(("sort", "price_asc"), kwargs["params"])
         self.assertIn(("page", "1"), kwargs["params"])
         self.assertIn(("size", "20"), kwargs["params"])
-        self.assertNotIn(("filters[brand]", "Apple"), kwargs["params"])
 
     @patch("storefront.services.requests.get")
     def test_short_query_returns_400(self, get_mock):
-        response = self.client.get("/api/v1/products", {"search": "ip"})
+        response = self.client.get("/api/v1/catalog/products", {"q": "ip"})
 
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data["code"], "INVALID_REQUEST")
@@ -83,17 +90,20 @@ class SearchTests(SimpleTestCase):
     def test_special_chars_do_not_break_query(self, get_mock):
         get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
 
-        response = self.client.get("/api/v1/products", {"search": "iPhone%15_'", "sort": "rating"})
+        response = self.client.get(
+            "/api/v1/catalog/products",
+            {"q": "iPhone%15_'", "sort": "new"},
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["items"], [])
-        self.assertIn(("search", "iPhone%15_'"), get_mock.call_args.kwargs["params"])
+        self.assertIn(("q", "iPhone%15_'"), get_mock.call_args.kwargs["params"])
 
     @patch("storefront.services.requests.get")
     def test_empty_results_returns_200(self, get_mock):
         get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
 
-        response = self.client.get("/api/v1/products", {"search": "coffee"})
+        response = self.client.get("/api/v1/catalog/products", {"q": "coffee"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["items"], [])
