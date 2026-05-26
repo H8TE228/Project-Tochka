@@ -38,7 +38,10 @@ _CODE_MAP = {
 def _to_message(detail) -> str:
     """ValidationError приходит со словарём/списком — собираем читаемое сообщение."""
     if isinstance(detail, dict):
-        # берём первое поле и его ошибку
+        if "message" in detail:
+            return str(detail["message"])
+        if "detail" in detail and len(detail) == 1:
+            return str(detail["detail"])
         field, errs = next(iter(detail.items()))
         msg = errs[0] if isinstance(errs, list) else errs
         return f"{field}: {msg}"
