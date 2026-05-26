@@ -22,12 +22,6 @@ paths:
       responses:
         "200":
           description: Visible products only.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/ProductPublicResponse"
         "401":
           description: Missing or invalid service key.
   /api/v1/reserve:
@@ -50,12 +44,37 @@ paths:
           description: Reservation applied or idempotent replay.
         "401":
           description: Missing or invalid service key.
+        "409":
+          description: Insufficient stock for at least one SKU; no changes applied.
+  /api/v1/fulfill:
+    post:
+      summary: Fulfill order delivery (deduct reserved quantity only)
+      description: |
+        Called when an order is shipped. Decreases `reserved_quantity` only;
+        `active_quantity` is unchanged. Idempotent by `order_id`.
+      parameters:
+        - in: header
+          name: X-Service-Key
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FulfillCommand"
+      responses:
+        "200":
+          description: Fulfill applied or idempotent replay.
+        "400":
+          description: Invalid request (e.g. SKU not found, quantity exceeds reserved).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-        "409":
-          description: Insufficient stock for at least one SKU; no changes applied.
+        "401":
+          description: Missing or invalid service key.
           content:
             application/json:
               schema:
@@ -80,51 +99,8 @@ paths:
           description: Unreserve applied or idempotent replay.
         "400":
           description: Trying to unreserve more than reserved.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: Missing or invalid service key.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-  /api/v1/invoices:
-    post:
-      summary: Create incoming goods invoice
-      description: |
-        Seller creates an invoice for incoming goods delivery (US-B2B-06).
-        All SKUs must belong to the authenticated seller and have MODERATED status.
-      security:
-        - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InvoiceCreate"
-      responses:
-        "201":
-          description: Invoice created successfully.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InvoiceResponse"
-        "400":
-          description: Empty items list or non-MODERATED SKU.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "401":
-          description: Missing or invalid JWT token.
-        "403":
-          description: SKU belongs to another seller.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
   /api/v1/events/moderation:
     post:
       summary: Apply moderation decision to product by SKU
@@ -150,6 +126,28 @@ paths:
           description: Missing or invalid service key.
 components:
   schemas:
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    FulfillCommand:
+      type: object
+      required: [order_id, sku_id, quantity]
+      properties:
+        order_id:
+          type: string
+          format: uuid
+          description: Order idempotency key.
+        sku_id:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
     ReserveItem:
       type: object
       required: [sku_id, quantity]
@@ -196,186 +194,3 @@ components:
         idempotency_key:
           type: string
           format: uuid
-    InvoiceStatus:
-      type: string
-      enum: [CREATED, PARTIALLY_ACCEPTED, ACCEPTED, CANCELLED]
-    InvoiceItem:
-      type: object
-      required: [sku_id, quantity]
-      properties:
-        sku_id:
-          type: string
-          format: uuid
-        quantity:
-          type: integer
-          minimum: 1
-    InvoiceCreate:
-      type: object
-      required: [items]
-      properties:
-        items:
-          type: array
-          minItems: 1
-          items:
-            $ref: "#/components/schemas/InvoiceItem"
-    InvoiceItemResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        sku_id:
-          type: string
-          format: uuid
-        sku_name:
-          type: string
-        quantity:
-          type: integer
-        accepted_quantity:
-          type: integer
-          nullable: true
-    InvoiceResponse:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        seller_id:
-          type: string
-          format: uuid
-        status:
-          $ref: "#/components/schemas/InvoiceStatus"
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-        items:
-          type: array
-          items:
-            $ref: "#/components/schemas/InvoiceItemResponse"
-    ProductImage:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        url:
-          type: string
-        ordering:
-          type: integer
-    ProductCharacteristic:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        value:
-          type: string
-    SKUImage:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        url:
-          type: string
-        ordering:
-          type: integer
-    SKUCharacteristic:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        value:
-          type: string
-    SKUPublicResponse:
-      type: object
-      required: [id, product_id, name, price, discount, stock_quantity, active_quantity, article, image, images, characteristics]
-      properties:
-        id:
-          type: string
-          format: uuid
-        product_id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        price:
-          type: integer
-        discount:
-          type: integer
-        stock_quantity:
-          type: integer
-        active_quantity:
-          type: integer
-        article:
-          type: string
-          nullable: true
-        image:
-          type: string
-        images:
-          type: array
-          items:
-            $ref: "#/components/schemas/SKUImage"
-        characteristics:
-          type: array
-          items:
-            $ref: "#/components/schemas/SKUCharacteristic"
-    ProductPublicResponse:
-      type: object
-      required: [id, seller_id, category_id, name, slug, description, status, images, characteristics, skus, created_at, updated_at]
-      properties:
-        id:
-          type: string
-          format: uuid
-        seller_id:
-          type: string
-          format: uuid
-        category_id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        slug:
-          type: string
-        description:
-          type: string
-        status:
-          type: string
-        images:
-          type: array
-          items:
-            $ref: "#/components/schemas/ProductImage"
-        characteristics:
-          type: array
-          items:
-            $ref: "#/components/schemas/ProductCharacteristic"
-        skus:
-          type: array
-          items:
-            $ref: "#/components/schemas/SKUPublicResponse"
-        created_at:
-          type: string
-          format: date-time
-        updated_at:
-          type: string
-          format: date-time
-    ErrorResponse:
-      type: object
-      properties:
-        code:
-          type: string
-        message:
-          type: string
-securitySchemes:
-  BearerAuth:
-    type: http
-    scheme: bearer
-    bearerFormat: JWT
