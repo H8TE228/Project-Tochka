@@ -1,20 +1,23 @@
 import uuid
 
 from django.db import transaction
+from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
+from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from seller_cabinet.exceptions import AlreadyDeleted, HardBlockedForbidden, NotOwner
-from seller_cabinet.permissions import IsSeller, HasValidServiceKey
+from seller_cabinet.authentication import JWTAuthentication, RequireServiceKeyAuthentication, ServiceKeyAuthentication
+from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated
 
 from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, ProcessedModerationEvent
 from .serializers import (
     ProductReadSerializer,
     ProductCatalogSerializer,
+    ProductSellerListSerializer,
     ProductWriteSerializer,
     SKUWriteSerializer,
     SKUUpdateSerializer,
@@ -38,15 +41,19 @@ from .services import (
 )
 
 
-def get_or_create_seller(user) -> Seller:
-    """Resolve Seller from JWT user. Поддерживает int (BigAutoField auth) и UUID (тесты)."""
+def _auth_uuid_from_user(user) -> uuid.UUID:
+    """user_id из JWT → UUID для Seller.auth_user_id."""
     raw_id = user.id
     if isinstance(raw_id, uuid.UUID):
-        auth_uuid = raw_id
-    elif isinstance(raw_id, int):
-        auth_uuid = uuid.UUID(int=raw_id)
-    else:
-        auth_uuid = uuid.UUID(str(raw_id))
+        return raw_id
+    if isinstance(raw_id, int):
+        return uuid.UUID(int=raw_id)
+    return uuid.UUID(str(raw_id))
+
+
+def get_or_create_seller(user) -> Seller:
+    """Resolve Seller from JWT user. Поддерживает int (BigAutoField auth) и UUID (тесты)."""
+    auth_uuid = _auth_uuid_from_user(user)
     seller, _ = Seller.objects.get_or_create(
         auth_user_id=auth_uuid,
         defaults={"name": getattr(user, "email", str(auth_uuid))},
@@ -54,17 +61,138 @@ def get_or_create_seller(user) -> Seller:
     return seller
 
 
+def resolve_seller_for_jwt(user) -> Seller:
+    """
+    Продавец из JWT: при наличии seller_id в claims — только если Seller.id совпадает
+    и привязан к тому же auth_user_id (защита от подмены).
+    """
+    auth_uuid = _auth_uuid_from_user(user)
+    claim_sid = getattr(user, "seller_id", None)
+    if claim_sid is not None:
+        sid = claim_sid if isinstance(claim_sid, uuid.UUID) else uuid.UUID(str(claim_sid))
+        return get_object_or_404(Seller, id=sid, auth_user_id=auth_uuid)
+    seller, _ = Seller.objects.get_or_create(
+        auth_user_id=auth_uuid,
+        defaults={"name": getattr(user, "email", str(auth_uuid))},
+    )
+    return seller
+
+
+def _parse_list_limit_offset(request) -> tuple[int, int]:
+    try:
+        limit = int(request.query_params.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    try:
+        offset = int(request.query_params.get("offset", 0))
+    except (TypeError, ValueError):
+        offset = 0
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+    return limit, offset
+
+
+def _apply_seller_list_status_filter(qs, status_raw: str):
+    """Фильтр ?status=ACTIVE|BLOCKED|DELETED."""
+    s = (status_raw or "").strip().upper()
+    if not s:
+        return qs
+    if s == "DELETED":
+        return qs.filter(deleted=True)
+    if s == "BLOCKED":
+        return qs.filter(
+            deleted=False,
+            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
+        )
+    if s == "ACTIVE":
+        return qs.filter(deleted=False).exclude(
+            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
+        )
+    return None  # invalid
+
+
+def _filter_products_by_title_search(qs, search: str):
+    """Подстрока в title без учёта регистра (в т.ч. кириллица на SQLite)."""
+    needle = search.casefold()
+    matching_ids = [
+        p.pk for p in qs.only("pk", "title") if needle in p.title.casefold()
+    ]
+    return qs.filter(pk__in=matching_ids)
+
+
+def _seller_product_list_response(request, seller: Seller) -> Response:
+    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
+    qs = (
+        Product.objects.filter(seller=seller)
+        .annotate(
+            skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
+            total_active_quantity=Coalesce(
+                Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
+                Value(0),
+                output_field=IntegerField(),
+            ),
+        )
+        .order_by("-created_at")
+    )
+
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        qs = _filter_products_by_title_search(qs, search)
+
+    status_raw = request.query_params.get("status", "")
+    filtered = _apply_seller_list_status_filter(qs, status_raw)
+    if filtered is None and status_raw.strip():
+        return Response(
+            {
+                "code": "INVALID_REQUEST",
+                "message": "status must be one of: ACTIVE, BLOCKED, DELETED",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if filtered is not None:
+        qs = filtered
+
+    total = qs.count()
+    limit, offset = _parse_list_limit_offset(request)
+    page = qs[offset : offset + limit]
+
+    return Response(
+        {
+            "items": ProductSellerListSerializer(page, many=True).data,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
+    )
+
+
 # ---------- Products ----------
+
+class ProductListView(APIView):
+    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsSeller]
+
+    def get(self, request):
+        seller = resolve_seller_for_jwt(request.user)
+        return _seller_product_list_response(request, seller)
+
 
 class ProductCreateView(APIView):
     """POST /api/v1/products — US-B2B-01 (канон-flow B2B-1)."""
+
+    authentication_classes = [JWTAuthentication]
     permission_classes = [IsSeller]
 
+    def get_authenticators(self):
+        if self.request.method == "GET":
+            return [RequireServiceKeyAuthentication()]
+        return super().get_authenticators()
+
     def get_permissions(self):
-        # ADR: keep backward compatibility for seller-cabinet GET /products,
-        # while enabling canonical B2C catalog access on the same endpoint via X-Service-Key.
-        if self.request.method == "GET" and self.request.headers.get("X-Service-Key"):
-            return [HasValidServiceKey()]
+        if self.request.method == "GET":
+            return [IsServiceAuthenticated()]
         return super().get_permissions()
 
     def post(self, request):
@@ -82,6 +210,7 @@ class ProductCreateView(APIView):
                 deleted=False,
                 status=Product.Status.MODERATED,
                 skus__active_quantity__gt=0,
+                skus__deleted=False,
             ).exclude(status=Product.Status.HARD_BLOCKED).distinct()
             if ids:
                 queryset = queryset.filter(skus__id__in=ids)
@@ -92,7 +221,9 @@ class ProductCreateView(APIView):
             for product in queryset:
                 visible_skus = [
                     sku for sku in product.skus.all()
-                    if (not ids or str(sku.id) in ids) and sku.active_quantity > 0
+                    if not sku.deleted
+                    and (not ids or str(sku.id) in ids)
+                    and sku.active_quantity > 0
                 ]
                 if not visible_skus:
                     continue
@@ -107,30 +238,33 @@ class ProductCreateView(APIView):
                 ]
             return Response(data)
 
-        seller = get_or_create_seller(request.user)
-        products = (
-            Product.objects.filter(seller=seller, deleted=False)
-            .select_related("category", "blocking_reason")
-            .prefetch_related(
-                "images", "characteristics",
-                "skus__characteristics",
-            )
-        )
-        return Response(ProductReadSerializer(products, many=True).data)
-
 
 class ProductDetailView(APIView):
-    """GET/PATCH/DELETE /api/v1/products/{id}.
-    PUT поддерживается как алиас на PATCH для backward compat."""
+    """GET/PUT /api/v1/products/{id} — US-B2B-03 (канон-flow B2B-3, B2B-5)."""
 
     def get_permissions(self):
-        if self.request.method in ("PUT", "PATCH", "DELETE"):
+        if self.request.method in ("PUT", "DELETE"):
             return [IsSeller()]
-        return [IsSeller()]
+        return [IsSeller()]  # GET тоже требует JWT в seller cabinet
 
     def get(self, request, product_id):
+        # Канон-flow B2B-5: чужой товар → 404 (не раскрываем)
         seller = get_or_create_seller(request.user)
-        product = get_object_or_404(Product, pk=product_id, deleted=False)
+        product = get_object_or_404(
+            Product.objects.filter(deleted=False)
+            .select_related("category", "blocking_reason")
+            .prefetch_related(
+                "images",
+                "characteristics",
+                Prefetch(
+                    "skus",
+                    queryset=SKU.objects.filter(deleted=False).prefetch_related(
+                        "characteristics"
+                    ),
+                ),
+            ),
+            pk=product_id,
+        )
         if product.seller_id != seller.id:
             raise Http404()
         return Response(ProductReadSerializer(product).data)
@@ -164,32 +298,29 @@ class ProductDetailView(APIView):
             publish_to_moderation("DELETED", product)
             publish_product_deleted_to_b2c(product, sku_ids)
 
-        # openapi: DELETE /api/v1/products/{id} → 204 No Content
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({"ok": True})
 
     def put(self, request, product_id):
-        # PUT → PATCH для backward compat
-        return self.patch(request, product_id)
-
-    def patch(self, request, product_id):
         seller = get_or_create_seller(request.user)
+        # 404 если товар не существует или удалён
         product = get_object_or_404(Product, pk=product_id, deleted=False)
 
+        # 403 NOT_OWNER если чужой (DoD US-B2B-03: edit_others_product_returns_403)
         if product.seller_id != seller.id:
             raise NotOwner(detail={
                 "code": "NOT_OWNER",
                 "message": "Product does not belong to the authenticated seller",
             })
 
+        # 403 FORBIDDEN если HARD_BLOCKED
         if product.status == Product.Status.HARD_BLOCKED:
             raise HardBlockedForbidden(detail={
                 "code": "FORBIDDEN",
                 "message": "Cannot edit hard-blocked product",
             })
 
-        # partial=True — PATCH-семантика по openapi: все поля опциональны
         serializer = ProductWriteSerializer(
-            product, data=request.data, partial=True, context={"seller": seller}
+            product, data=request.data, context={"seller": seller}
         )
         serializer.is_valid(raise_exception=True)
 
@@ -231,7 +362,7 @@ class SKUCreateView(APIView):
             })
 
         with transaction.atomic():
-            is_first_sku = not product.skus.exists()
+            is_first_sku = not product.skus.filter(deleted=False).exists()
             sku = serializer.save()
             if is_first_sku:
                 transition_on_first_sku(product)
@@ -240,17 +371,15 @@ class SKUCreateView(APIView):
 
 
 class SKUDetailView(APIView):
-    """PUT/PATCH /api/v1/skus/{id}. PUT делегирует на PATCH."""
+    """PUT /api/v1/skus/{id} — US-B2B-03."""
     permission_classes = [IsSeller]
 
     def put(self, request, sku_id):
-        return self.patch(request, sku_id)
-
-    def patch(self, request, sku_id):
         seller = get_or_create_seller(request.user)
         sku = get_object_or_404(
             SKU.objects.select_related("product"),
             pk=sku_id,
+            deleted=False,
             product__deleted=False,
         )
 
@@ -266,7 +395,7 @@ class SKUDetailView(APIView):
                 "message": "Cannot edit SKU of hard-blocked product",
             })
 
-        serializer = SKUUpdateSerializer(sku, data=request.data, partial=True)
+        serializer = SKUUpdateSerializer(sku, data=request.data)
         serializer.is_valid(raise_exception=True)
 
         with transaction.atomic():
@@ -276,7 +405,61 @@ class SKUDetailView(APIView):
         return Response(SKUReadSerializer(sku).data)
 
 
-# ---------- Invoice ----------
+class SKUDeleteView(APIView):
+    """
+    DELETE /api/v1/products/{product_id}/skus/{sku_id} — soft delete SKU.
+    Error format must be canonical: {"code": "...", "message": "..."}.
+    """
+    permission_classes = [IsSeller]
+
+    def delete(self, request, product_id, sku_id):
+        seller = get_or_create_seller(request.user)
+        sku = (
+            SKU.objects.filter(pk=sku_id, deleted=False, product_id=product_id)
+            .select_related("product")
+            .first()
+        )
+
+        # Не раскрываем существование чужих SKU/товаров (IDOR) — 404.
+        if sku is None or sku.product.seller_id != seller.id:
+            return Response(
+                {"code": "NOT_FOUND", "message": "SKU not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if sku.product.status == Product.Status.HARD_BLOCKED:
+            return Response(
+                {"code": "FORBIDDEN", "message": "Cannot delete SKU of HARD_BLOCKED product"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        if sku.reserved_quantity != 0:
+            return Response(
+                {
+                    "code": "INVALID_REQUEST",
+                    "message": f"Cannot delete SKU with active reserves (reserved_quantity={sku.reserved_quantity})",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        product = sku.product
+        prior_status = product.status
+        had_active = sku.active_quantity > 0
+
+        with transaction.atomic():
+            sku.deleted = True
+            sku.save(update_fields=["deleted", "updated_at"])
+            product.save(update_fields=["updated_at"])
+
+            remaining = product.skus.filter(deleted=False).exists()
+            if not remaining and prior_status == Product.Status.ON_MODERATION:
+                product.status = Product.Status.CREATED
+                product.save(update_fields=["status", "updated_at"])
+                publish_to_moderation("DELETED", product)
+            if had_active and prior_status == Product.Status.MODERATED:
+                publish_sku_out_of_stock_to_b2c(sku)
+
+        return Response({"ok": True}, status=status.HTTP_200_OK)
 
 class InvoiceCreateView(APIView):
     permission_classes = [IsSeller]
@@ -311,35 +494,17 @@ class InvoiceAcceptView(APIView):
         serializer = InvoiceAcceptSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        invoice_id = serializer.validated_data["invoice_id"]
-        accept_items = serializer.validated_data["items"]
+        invoice = get_object_or_404(
+            Invoice, pk=serializer.validated_data["invoice_id"], accepted_at__isnull=True
+        )
 
-        invoice = get_object_or_404(Invoice, pk=invoice_id, status=Invoice.Status.CREATED)
+        for line in invoice.lines.select_related("sku"):
+            line.sku.active_quantity += line.quantity
+            line.sku.save(update_fields=["active_quantity"])
 
-        with transaction.atomic():
-            lines = {
-                line.id: line
-                for line in invoice.lines.select_related("sku").select_for_update()
-            }
-
-            for item in accept_items:
-                line = lines.get(item["line_id"])
-                if line is None:
-                    continue
-                aq = item["accepted_quantity"]
-                line.accepted_quantity = aq
-                line.save(update_fields=["accepted_quantity"])
-                line.sku.active_quantity += aq
-                line.sku.save(update_fields=["active_quantity", "updated_at"])
-
-            fully_accepted = all(
-                line.accepted_quantity is not None and line.accepted_quantity >= line.quantity
-                for line in lines.values()
-            )
-            invoice.status = (
-                Invoice.Status.ACCEPTED if fully_accepted else Invoice.Status.PARTIALLY_ACCEPTED
-            )
-            invoice.save(update_fields=["status", "updated_at"])
+        from django.utils import timezone as tz
+        invoice.accepted_at = tz.now()
+        invoice.save(update_fields=["accepted_at"])
 
         return Response(InvoiceReadSerializer(invoice).data)
 
@@ -385,7 +550,8 @@ class CategoryDetailView(APIView):
 
 
 class ReserveView(APIView):
-    permission_classes = [HasValidServiceKey]
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
         serializer = ReserveCommandSerializer(data=request.data)
@@ -402,13 +568,12 @@ class ReserveView(APIView):
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_related("product").select_for_update().filter(id__in=sku_ids)
+                for sku in SKU.objects.select_related("product").select_for_update().filter(
+                    id__in=sku_ids, deleted=False
+                )
             }
             if len(skus) != len(sku_ids):
-                return Response(
-                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
 
             for item in items:
                 sku = skus[item["sku_id"]]
@@ -442,7 +607,8 @@ class FulfillView(APIView):
     POST /api/v1/fulfill — доставка заказа: уменьшить reserved_quantity, active_quantity не трогать.
     Идемпотентность по order_id.
     """
-    permission_classes = [HasValidServiceKey]
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
         serializer = FulfillCommandSerializer(data=request.data)
@@ -458,7 +624,7 @@ class FulfillView(APIView):
 
         with transaction.atomic():
             try:
-                sku = SKU.objects.select_for_update().get(pk=sku_id)
+                sku = SKU.objects.select_for_update().get(pk=sku_id, deleted=False)
             except SKU.DoesNotExist:
                 return Response(
                     {"code": "INVALID_REQUEST", "message": "SKU not found"},
@@ -486,7 +652,8 @@ class FulfillView(APIView):
 
 
 class UnreserveView(APIView):
-    permission_classes = [HasValidServiceKey]
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
         serializer = ReserveCommandSerializer(data=request.data)
@@ -503,13 +670,10 @@ class UnreserveView(APIView):
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
+                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids, deleted=False)
             }
             if len(skus) != len(sku_ids):
-                return Response(
-                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
 
             for item in items:
                 sku = skus[item["sku_id"]]
@@ -534,44 +698,18 @@ class UnreserveView(APIView):
 
 
 class ModerationEventApplyView(APIView):
-    permission_classes = [HasValidServiceKey]
-
-    def _first_validation_message(self, detail):
-        if isinstance(detail, dict):
-            first = next(iter(detail.values()))
-            if isinstance(first, list):
-                return str(first[0])
-            return str(first)
-        if isinstance(detail, list):
-            return str(detail[0])
-        return str(detail)
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
         serializer = ModerationEventSerializer(data=request.data)
-        try:
-            serializer.is_valid(raise_exception=True)
-        except ValidationError as exc:
-            return Response(
-                {
-                    "code": "INVALID_REQUEST",
-                    "message": self._first_validation_message(exc.detail),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         with transaction.atomic():
-            try:
-                sku = SKU.objects.select_related("product").select_for_update().get(id=data["sku_id"])
-            except SKU.DoesNotExist:
-                return Response(
-                    {
-                        "code": "PRODUCT_NOT_FOUND",
-                        "message": f"SKU {data['sku_id']} does not exist",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            sku = get_object_or_404(
+                SKU.objects.select_related("product").select_for_update(), id=data["sku_id"]
+            )
             if ProcessedModerationEvent.objects.filter(
                 sku=sku, idempotency_key=data["idempotency_key"]
             ).exists():

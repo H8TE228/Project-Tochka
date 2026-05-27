@@ -13,8 +13,8 @@ def test_delete_sets_deleted_true(api_client, product_factory):
     product = product_factory(status=Product.Status.MODERATED)
     with patch("products.services._post_event"):
         resp = api_client.delete(f"/api/v1/products/{product.id}")
-    # openapi B2B: DELETE → 204 No Content, без тела
-    assert resp.status_code == 204
+    assert resp.status_code == 200
+    assert resp.data == {"ok": True}
     product.refresh_from_db()
     assert product.deleted is True
 
@@ -74,11 +74,14 @@ def test_delete_others_product_returns_403(api_client, product_factory, another_
     assert resp.data["code"] == "NOT_OWNER"
 
 
-def test_deleted_product_not_in_seller_list(api_client, product_factory):
+def test_deleted_product_visible_in_list_with_deleted_flag(api_client, product_factory):
     product = product_factory(status=Product.Status.MODERATED)
     with patch("products.services._post_event"):
         api_client.delete(f"/api/v1/products/{product.id}")
-    resp = api_client.get("/api/v1/products")
+    resp = api_client.get("/api/v1/products/list")
     assert resp.status_code == 200
-    ids = [p["id"] for p in resp.data]
-    assert str(product.id) not in ids
+    items = resp.data["items"]
+    row = next((p for p in items if p["id"] == str(product.id)), None)
+    assert row is not None
+    assert row["deleted"] is True
+    assert row["status"] == "DELETED"
