@@ -365,13 +365,11 @@ class FulfillCommandSerializer(serializers.Serializer):
 
 
 class ModerationEventSerializer(serializers.Serializer):
-    class Status(serializers.ChoiceField):
-        def __init__(self, **kwargs):
-            super().__init__(choices=["MODERATED", "BLOCKED"], **kwargs)
-
-    sku_id = serializers.UUIDField()
-    status = Status()
+    """openapi: ModerationEvent — product_id, status, occurred_at (без event_type)."""
+    product_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
     hard_block = serializers.BooleanField()
+    occurred_at = serializers.DateTimeField()
     field_reports = serializers.JSONField(required=False, allow_null=True)
     blocking_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     idempotency_key = serializers.UUIDField()

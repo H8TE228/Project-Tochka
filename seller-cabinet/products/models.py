@@ -233,19 +233,17 @@ class ProcessedRequest(models.Model):
 
 
 class ProcessedModerationEvent(models.Model):
-    """Idempotency журнал примененных moderation-решений per SKU."""
+    """Idempotency журнал moderation-событий по паре (service_id, idempotency_key)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    sku = models.ForeignKey(
-        SKU, on_delete=models.CASCADE, related_name="processed_moderation_events"
-    )
+    service_id = models.CharField(max_length=128)
     idempotency_key = models.UUIDField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["sku", "idempotency_key"],
-                name="uniq_processed_moderation_event_sku_idempotency",
+                fields=["service_id", "idempotency_key"],
+                name="uniq_processed_moderation_event_service_idempotency",
             ),
         ]

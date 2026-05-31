@@ -807,20 +807,28 @@ class ModerationEventApplyView(APIView):
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
+        service_id = request.headers.get("X-Service-Id")
+        if not service_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "Missing X-Service-Id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = ModerationEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         with transaction.atomic():
-            sku = get_object_or_404(
-                SKU.objects.select_related("product").select_for_update(), id=data["sku_id"]
-            )
             if ProcessedModerationEvent.objects.filter(
-                sku=sku, idempotency_key=data["idempotency_key"]
+                service_id=service_id,
+                idempotency_key=data["idempotency_key"],
             ).exists():
-                return Response({"ok": True}, status=status.HTTP_200_OK)
+                return Response(status=status.HTTP_204_NO_CONTENT)
 
-            product = sku.product
+            product = get_object_or_404(
+                Product.objects.select_for_update(),
+                pk=data["product_id"],
+            )
             if data["status"] == "MODERATED":
                 product.status = Product.Status.MODERATED
                 product.blocking_reason = None
@@ -845,8 +853,8 @@ class ModerationEventApplyView(APIView):
                 ]
             )
             ProcessedModerationEvent.objects.create(
-                sku=sku,
+                service_id=service_id,
                 idempotency_key=data["idempotency_key"],
             )
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)
