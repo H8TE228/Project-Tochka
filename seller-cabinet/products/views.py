@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404
@@ -10,19 +11,34 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from seller_cabinet.exceptions import AlreadyDeleted, HardBlockedForbidden, NotOwner
-from seller_cabinet.authentication import JWTAuthentication, RequireServiceKeyAuthentication, ServiceKeyAuthentication
+from seller_cabinet.authentication import (
+    JWTAuthentication,
+    PublicCatalogAuthentication,
+    RequireServiceKeyAuthentication,
+)
 from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated
 
-from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, ProcessedModerationEvent
+from .models import (
+    Product,
+    SKU,
+    Seller,
+    Invoice,
+    Category,
+    InventoryReservation,
+    ProcessedRequest,
+    ProcessedModerationEvent,
+)
 from .serializers import (
     ProductReadSerializer,
-    ProductCatalogSerializer,
+    ProductIdsBatchSerializer,
+    product_public_paginated_response,
     ProductSellerListSerializer,
     ProductWriteSerializer,
     SKUWriteSerializer,
     SKUUpdateSerializer,
     SKUReadSerializer,
-    ReserveCommandSerializer,
+    ReserveRequestSerializer,
+    UnreserveRequestSerializer,
     FulfillCommandSerializer,
     ModerationEventSerializer,
     InvoiceWriteSerializer,
@@ -120,6 +136,53 @@ def _filter_products_by_title_search(qs, search: str):
     return qs.filter(pk__in=matching_ids)
 
 
+def _parse_catalog_page_size(request) -> tuple[int, int]:
+    try:
+        page = int(request.query_params.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = int(request.query_params.get("size", 20))
+    except (TypeError, ValueError):
+        size = 20
+    page = max(1, page)
+    size = max(1, min(size, 100))
+    return page, size
+
+
+def _public_catalog_queryset():
+    """Видимые в B2C товары; seller/images/characteristics/skus — одним запросом."""
+    visible_skus = SKU.objects.filter(
+        active_quantity__gt=0,
+    ).prefetch_related("images", "characteristics")
+    return (
+        Product.objects.filter(
+            deleted=False,
+            status=Product.Status.MODERATED,
+            skus__active_quantity__gt=0,
+        )
+        .exclude(status=Product.Status.HARD_BLOCKED)
+        .select_related("seller", "category")
+        .prefetch_related(
+            "images",
+            "characteristics",
+            Prefetch("skus", queryset=visible_skus),
+        )
+        .distinct()
+        .order_by("-created_at")
+    )
+
+
+def _public_catalog_response(request, queryset) -> Response:
+    page, size = _parse_catalog_page_size(request)
+    total = queryset.count()
+    offset = (page - 1) * size
+    items = list(queryset[offset : offset + size])
+    return Response(
+        product_public_paginated_response(items, total=total, page=page, size=size)
+    )
+
+
 def _seller_product_list_response(request, seller: Seller) -> Response:
     """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
     qs = (
@@ -179,64 +242,57 @@ class ProductListView(APIView):
         return _seller_product_list_response(request, seller)
 
 
-class ProductCreateView(APIView):
-    """POST /api/v1/products — US-B2B-01 (канон-flow B2B-1)."""
+class PublicProductCatalogView(APIView):
+    """
+    GET/POST /api/v1/products — B2C-каталог (US-B2B-07).
+    GET /api/v1/public/products — тот же каталог для buyer-cabinet.
+    POST с product_ids в теле — выборка по id товара.
+    """
 
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSeller]
+    authentication_classes = [PublicCatalogAuthentication]
+    permission_classes = [IsServiceAuthenticated]
+
+    def get(self, request):
+        return _public_catalog_response(request, _public_catalog_queryset())
+
+    def post(self, request):
+        serializer = ProductIdsBatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        queryset = _public_catalog_queryset()
+        product_ids = serializer.validated_data.get("product_ids") or []
+        if product_ids:
+            queryset = queryset.filter(id__in=product_ids)
+        return _public_catalog_response(request, queryset)
+
+
+class ProductsView(APIView):
+    """GET/POST (batch) каталог + POST (create) создание товара на /api/v1/products."""
 
     def get_authenticators(self):
         if self.request.method == "GET":
-            return [RequireServiceKeyAuthentication()]
-        return super().get_authenticators()
+            return [PublicCatalogAuthentication()]
+        if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
+            return [PublicCatalogAuthentication()]
+        return [JWTAuthentication()]
 
     def get_permissions(self):
         if self.request.method == "GET":
             return [IsServiceAuthenticated()]
-        return super().get_permissions()
+        if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
+            return [IsServiceAuthenticated()]
+        return [IsSeller()]
+
+    def get(self, request):
+        return PublicProductCatalogView.get(self, request)
 
     def post(self, request):
+        if request.headers.get("X-Service-Key"):
+            return PublicProductCatalogView.post(self, request)
         seller = get_or_create_seller(request.user)
         serializer = ProductWriteSerializer(data=request.data, context={"seller": seller})
         serializer.is_valid(raise_exception=True)
         product = serializer.save()
         return Response(ProductReadSerializer(product).data, status=status.HTTP_201_CREATED)
-
-    def get(self, request):
-        if request.headers.get("X-Service-Key"):
-            ids_raw = request.query_params.get("ids")
-            ids = [x.strip() for x in ids_raw.split(",")] if ids_raw else []
-            queryset = Product.objects.filter(
-                deleted=False,
-                status=Product.Status.MODERATED,
-                skus__active_quantity__gt=0,
-                skus__deleted=False,
-            ).exclude(status=Product.Status.HARD_BLOCKED).distinct()
-            if ids:
-                queryset = queryset.filter(skus__id__in=ids)
-            queryset = queryset.select_related("category").prefetch_related(
-                "skus",
-            )
-            visible_products = []
-            for product in queryset:
-                visible_skus = [
-                    sku for sku in product.skus.all()
-                    if not sku.deleted
-                    and (not ids or str(sku.id) in ids)
-                    and sku.active_quantity > 0
-                ]
-                if not visible_skus:
-                    continue
-                product.visible_skus = visible_skus
-                visible_products.append(product)
-
-            data = ProductCatalogSerializer(visible_products, many=True).data
-            for item, product in zip(data, visible_products):
-                item["skus"] = [
-                    sku for sku in item["skus"]
-                    if any(str(vs.id) == sku["id"] for vs in product.visible_skus)
-                ]
-            return Response(data)
 
 
 class ProductDetailView(APIView):
@@ -549,33 +605,52 @@ class CategoryDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _reserve_response(order_id, reserved_at) -> dict:
+    """openapi: ReserveResponse."""
+    return {
+        "order_id": str(order_id),
+        "status": "RESERVED",
+        "reserved_at": reserved_at,
+    }
+
+
 class ReserveView(APIView):
+    """POST /api/v1/inventory/reserve — резерв по order_id (идемпотентность на пару order_id+sku)."""
+
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = ReserveCommandSerializer(data=request.data)
+        serializer = ReserveRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["order_id"]
         items = serializer.validated_data["items"]
-        idem_key = serializer.validated_data["idempotency_key"]
-
-        if ProcessedRequest.objects.filter(
-            action=ProcessedRequest.Action.RESERVE, idempotency_key=idem_key
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
 
         with transaction.atomic():
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
                 for sku in SKU.objects.select_related("product").select_for_update().filter(
-                    id__in=sku_ids, deleted=False
+                    id__in=sku_ids
                 )
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            existing = {
+                r.sku_id: r
+                for r in InventoryReservation.objects.select_for_update().filter(
+                    order_id=order_id,
+                    sku_id__in=sku_ids,
+                )
+            }
 
             for item in items:
+                if item["sku_id"] in existing:
+                    continue
                 sku = skus[item["sku_id"]]
                 if sku.active_quantity < item["quantity"]:
                     return Response(
@@ -584,22 +659,38 @@ class ReserveView(APIView):
                     )
 
             out_of_stock_skus = []
+            reserved_at = timezone.now()
             for item in items:
-                sku = skus[item["sku_id"]]
-                sku.active_quantity -= item["quantity"]
-                sku.reserved_quantity += item["quantity"]
+                sku_id = item["sku_id"]
+                if sku_id in existing:
+                    continue
+                sku = skus[sku_id]
+                quantity = item["quantity"]
+                sku.active_quantity -= quantity
+                sku.reserved_quantity += quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
+                InventoryReservation.objects.create(
+                    order_id=order_id,
+                    sku_id=sku_id,
+                    quantity=quantity,
+                    reserved_at=reserved_at,
+                )
                 if sku.active_quantity == 0:
                     out_of_stock_skus.append(sku)
 
-            ProcessedRequest.objects.create(
-                action=ProcessedRequest.Action.RESERVE,
-                idempotency_key=idem_key,
+            first_reserved = (
+                InventoryReservation.objects.filter(order_id=order_id)
+                .order_by("reserved_at")
+                .values_list("reserved_at", flat=True)
+                .first()
             )
             for sku in out_of_stock_skus:
                 publish_sku_out_of_stock_to_b2c(sku)
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(
+            _reserve_response(order_id, first_reserved or reserved_at),
+            status=status.HTTP_200_OK,
+        )
 
 
 class FulfillView(APIView):
@@ -652,47 +743,61 @@ class FulfillView(APIView):
 
 
 class UnreserveView(APIView):
+    """POST /api/v1/inventory/unreserve — снятие резерва по order_id+sku из хранимой записи."""
+
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = ReserveCommandSerializer(data=request.data)
+        serializer = UnreserveRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["order_id"]
         items = serializer.validated_data["items"]
-        idem_key = serializer.validated_data["idempotency_key"]
-
-        if ProcessedRequest.objects.filter(
-            action=ProcessedRequest.Action.UNRESERVE, idempotency_key=idem_key
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
 
         with transaction.atomic():
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids, deleted=False)
+                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
-                sku = skus[item["sku_id"]]
-                if sku.reserved_quantity < item["quantity"]:
+                sku_id = item["sku_id"]
+                foreign = (
+                    InventoryReservation.objects.select_for_update()
+                    .filter(sku_id=sku_id)
+                    .exclude(order_id=order_id)
+                    .first()
+                )
+                if foreign is not None:
                     return Response(
-                        {"code": "INVALID_REQUEST", "message": "Cannot unreserve more than reserved"},
-                        status=status.HTTP_400_BAD_REQUEST,
+                        {
+                            "code": "FORBIDDEN",
+                            "message": "Cannot unreserve reservation belonging to another order",
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
                     )
 
             for item in items:
-                sku = skus[item["sku_id"]]
-                sku.active_quantity += item["quantity"]
-                sku.reserved_quantity -= item["quantity"]
+                sku_id = item["sku_id"]
+                reservation = (
+                    InventoryReservation.objects.select_for_update()
+                    .filter(order_id=order_id, sku_id=sku_id)
+                    .first()
+                )
+                if reservation is None:
+                    continue
+                sku = skus[sku_id]
+                quantity = reservation.quantity
+                sku.active_quantity += quantity
+                sku.reserved_quantity -= quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
-
-            ProcessedRequest.objects.create(
-                action=ProcessedRequest.Action.UNRESERVE,
-                idempotency_key=idem_key,
-            )
+                reservation.delete()
 
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
@@ -702,20 +807,28 @@ class ModerationEventApplyView(APIView):
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
+        service_id = request.headers.get("X-Service-Id")
+        if not service_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "Missing X-Service-Id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = ModerationEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
         with transaction.atomic():
-            sku = get_object_or_404(
-                SKU.objects.select_related("product").select_for_update(), id=data["sku_id"]
-            )
             if ProcessedModerationEvent.objects.filter(
-                sku=sku, idempotency_key=data["idempotency_key"]
+                service_id=service_id,
+                idempotency_key=data["idempotency_key"],
             ).exists():
-                return Response({"ok": True}, status=status.HTTP_200_OK)
+                return Response(status=status.HTTP_204_NO_CONTENT)
 
-            product = sku.product
+            product = get_object_or_404(
+                Product.objects.select_for_update(),
+                pk=data["product_id"],
+            )
             if data["status"] == "MODERATED":
                 product.status = Product.Status.MODERATED
                 product.blocking_reason = None
@@ -740,8 +853,8 @@ class ModerationEventApplyView(APIView):
                 ]
             )
             ProcessedModerationEvent.objects.create(
-                sku=sku,
+                service_id=service_id,
                 idempotency_key=data["idempotency_key"],
             )
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)

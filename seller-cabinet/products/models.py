@@ -192,6 +192,24 @@ class InvoiceLine(models.Model):
         return f"{self.invoice} — {self.sku} x{self.quantity}"
 
 
+class InventoryReservation(models.Model):
+    """Резерв по паре (order_id, sku); количество и время для unreserve и идемпотентности."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order_id = models.UUIDField(db_index=True)
+    sku = models.ForeignKey(SKU, on_delete=models.CASCADE, related_name="inventory_reservations")
+    quantity = models.IntegerField()
+    reserved_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order_id", "sku"],
+                name="uniq_inventory_reservation_order_sku",
+            ),
+        ]
+
+
 class ProcessedRequest(models.Model):
     """Idempotency журнал сервисных команд reserve/unreserve/fulfill."""
 
@@ -215,19 +233,17 @@ class ProcessedRequest(models.Model):
 
 
 class ProcessedModerationEvent(models.Model):
-    """Idempotency журнал примененных moderation-решений per SKU."""
+    """Idempotency журнал moderation-событий по паре (service_id, idempotency_key)."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    sku = models.ForeignKey(
-        SKU, on_delete=models.CASCADE, related_name="processed_moderation_events"
-    )
+    service_id = models.CharField(max_length=128)
     idempotency_key = models.UUIDField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["sku", "idempotency_key"],
-                name="uniq_processed_moderation_event_sku_idempotency",
+                fields=["service_id", "idempotency_key"],
+                name="uniq_processed_moderation_event_service_idempotency",
             ),
         ]

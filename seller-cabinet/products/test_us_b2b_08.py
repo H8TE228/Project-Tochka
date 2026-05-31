@@ -3,15 +3,18 @@ from unittest.mock import patch
 
 import pytest
 
-from products.models import ProcessedRequest
+from products.models import InventoryReservation
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
+RESERVE_URL = "/api/v1/inventory/reserve"
+UNRESERVE_URL = "/api/v1/inventory/unreserve"
 
-def _command(items, idem=None):
+
+def _reserve_payload(items, order_id=None):
     return {
+        "order_id": str(order_id or uuid.uuid4()),
         "items": items,
-        "idempotency_key": str(idem or uuid.uuid4()),
     }
 
 
@@ -19,13 +22,21 @@ def test_reserve_all_skus_succeeds(service_api_client, product_factory, sku_fact
     product = product_factory(status="MODERATED")
     sku1 = sku_factory(product, active_quantity=10, reserved_quantity=0)
     sku2 = sku_factory(product, active_quantity=15, reserved_quantity=1)
-    payload = _command(
-        [{"sku_id": str(sku1.id), "quantity": 3}, {"sku_id": str(sku2.id), "quantity": 5}]
+    order_id = uuid.uuid4()
+    payload = _reserve_payload(
+        [
+            {"sku_id": str(sku1.id), "quantity": 3},
+            {"sku_id": str(sku2.id), "quantity": 5},
+        ],
+        order_id=order_id,
     )
 
-    resp = service_api_client.post("/api/v1/reserve", payload, format="json")
+    resp = service_api_client.post(RESERVE_URL, payload, format="json")
 
     assert resp.status_code == 200
+    assert resp.data["order_id"] == str(order_id)
+    assert resp.data["status"] == "RESERVED"
+    assert "reserved_at" in resp.data
     sku1.refresh_from_db()
     sku2.refresh_from_db()
     assert sku1.active_quantity == 7 and sku1.reserved_quantity == 3
@@ -36,56 +47,95 @@ def test_partial_insufficient_stock_returns_409_all_rollback(service_api_client,
     product = product_factory(status="MODERATED")
     sku1 = sku_factory(product, active_quantity=4, reserved_quantity=0)
     sku2 = sku_factory(product, active_quantity=1, reserved_quantity=0)
-    payload = _command(
-        [{"sku_id": str(sku1.id), "quantity": 2}, {"sku_id": str(sku2.id), "quantity": 2}]
+    payload = _reserve_payload(
+        [
+            {"sku_id": str(sku1.id), "quantity": 2},
+            {"sku_id": str(sku2.id), "quantity": 2},
+        ],
     )
 
-    resp = service_api_client.post("/api/v1/reserve", payload, format="json")
+    resp = service_api_client.post(RESERVE_URL, payload, format="json")
 
     assert resp.status_code == 409
     sku1.refresh_from_db()
     sku2.refresh_from_db()
     assert sku1.active_quantity == 4 and sku1.reserved_quantity == 0
     assert sku2.active_quantity == 1 and sku2.reserved_quantity == 0
+    assert InventoryReservation.objects.count() == 0
 
 
 def test_idempotent_reserve_returns_200_without_double_deduction(service_api_client, product_factory, sku_factory):
     product = product_factory(status="MODERATED")
     sku = sku_factory(product, active_quantity=10, reserved_quantity=0)
-    idem = uuid.uuid4()
-    payload = _command([{"sku_id": str(sku.id), "quantity": 3}], idem=idem)
+    order_id = uuid.uuid4()
+    payload = _reserve_payload([{"sku_id": str(sku.id), "quantity": 3}], order_id=order_id)
 
-    first = service_api_client.post("/api/v1/reserve", payload, format="json")
-    second = service_api_client.post("/api/v1/reserve", payload, format="json")
+    first = service_api_client.post(RESERVE_URL, payload, format="json")
+    second = service_api_client.post(RESERVE_URL, payload, format="json")
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert second.data["order_id"] == str(order_id)
+    assert second.data["status"] == "RESERVED"
     sku.refresh_from_db()
     assert sku.active_quantity == 7
     assert sku.reserved_quantity == 3
-    assert ProcessedRequest.objects.filter(action="RESERVE", idempotency_key=idem).count() == 1
+    assert InventoryReservation.objects.filter(order_id=order_id, sku=sku).count() == 1
 
 
 def test_sku_out_of_stock_event_emitted(service_api_client, product_factory, sku_factory):
     product = product_factory(status="MODERATED")
     sku = sku_factory(product, active_quantity=2, reserved_quantity=0)
-    payload = _command([{"sku_id": str(sku.id), "quantity": 2}])
+    payload = _reserve_payload([{"sku_id": str(sku.id), "quantity": 2}])
 
     with patch("products.services._post_event") as mock_post:
-        resp = service_api_client.post("/api/v1/reserve", payload, format="json")
+        resp = service_api_client.post(RESERVE_URL, payload, format="json")
 
     assert resp.status_code == 200
     assert any(call.args[1].get("event") == "SKU_OUT_OF_STOCK" for call in mock_post.call_args_list)
 
 
-def test_unreserve_restores_quantities(service_api_client, product_factory, sku_factory):
+def test_unreserve_restores_quantities_from_stored_record(service_api_client, product_factory, sku_factory):
     product = product_factory(status="MODERATED")
-    sku = sku_factory(product, active_quantity=5, reserved_quantity=4)
-    payload = _command([{"sku_id": str(sku.id), "quantity": 3}])
+    sku = sku_factory(product, active_quantity=8, reserved_quantity=0)
+    order_id = uuid.uuid4()
+    service_api_client.post(
+        RESERVE_URL,
+        _reserve_payload([{"sku_id": str(sku.id), "quantity": 3}], order_id=order_id),
+        format="json",
+    )
 
-    resp = service_api_client.post("/api/v1/unreserve", payload, format="json")
+    resp = service_api_client.post(
+        UNRESERVE_URL,
+        {"order_id": str(order_id), "items": [{"sku_id": str(sku.id)}]},
+        format="json",
+    )
 
     assert resp.status_code == 200
     sku.refresh_from_db()
     assert sku.active_quantity == 8
-    assert sku.reserved_quantity == 1
+    assert sku.reserved_quantity == 0
+    assert not InventoryReservation.objects.filter(order_id=order_id, sku=sku).exists()
+
+
+def test_unreserve_foreign_order_returns_403(service_api_client, product_factory, sku_factory):
+    product = product_factory(status="MODERATED")
+    sku = sku_factory(product, active_quantity=10, reserved_quantity=0)
+    order_a = uuid.uuid4()
+    order_b = uuid.uuid4()
+    service_api_client.post(
+        RESERVE_URL,
+        _reserve_payload([{"sku_id": str(sku.id), "quantity": 2}], order_id=order_a),
+        format="json",
+    )
+
+    resp = service_api_client.post(
+        UNRESERVE_URL,
+        {"order_id": str(order_b), "items": [{"sku_id": str(sku.id)}]},
+        format="json",
+    )
+
+    assert resp.status_code == 403
+    assert resp.data["code"] == "FORBIDDEN"
+    sku.refresh_from_db()
+    assert sku.reserved_quantity == 2
