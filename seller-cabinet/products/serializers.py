@@ -342,9 +342,20 @@ class ReserveItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
 
-class ReserveCommandSerializer(serializers.Serializer):
+class ReserveRequestSerializer(serializers.Serializer):
+    """openapi: ReserveRequest."""
+    order_id = serializers.UUIDField()
     items = ReserveItemSerializer(many=True, min_length=1)
-    idempotency_key = serializers.UUIDField()
+
+
+class UnreserveItemSerializer(serializers.Serializer):
+    sku_id = serializers.UUIDField()
+
+
+class UnreserveRequestSerializer(serializers.Serializer):
+    """openapi: UnreserveRequest."""
+    order_id = serializers.UUIDField()
+    items = UnreserveItemSerializer(many=True, min_length=1)
 
 
 class FulfillCommandSerializer(serializers.Serializer):

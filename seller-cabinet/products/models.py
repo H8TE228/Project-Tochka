@@ -192,6 +192,24 @@ class InvoiceLine(models.Model):
         return f"{self.invoice} — {self.sku} x{self.quantity}"
 
 
+class InventoryReservation(models.Model):
+    """Резерв по паре (order_id, sku); количество и время для unreserve и идемпотентности."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    order_id = models.UUIDField(db_index=True)
+    sku = models.ForeignKey(SKU, on_delete=models.CASCADE, related_name="inventory_reservations")
+    quantity = models.IntegerField()
+    reserved_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["order_id", "sku"],
+                name="uniq_inventory_reservation_order_sku",
+            ),
+        ]
+
+
 class ProcessedRequest(models.Model):
     """Idempotency журнал сервисных команд reserve/unreserve/fulfill."""
 

@@ -1,6 +1,7 @@
 import uuid
 
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404
@@ -17,7 +18,16 @@ from seller_cabinet.authentication import (
 )
 from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated
 
-from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, ProcessedModerationEvent
+from .models import (
+    Product,
+    SKU,
+    Seller,
+    Invoice,
+    Category,
+    InventoryReservation,
+    ProcessedRequest,
+    ProcessedModerationEvent,
+)
 from .serializers import (
     ProductReadSerializer,
     ProductIdsBatchSerializer,
@@ -27,7 +37,8 @@ from .serializers import (
     SKUWriteSerializer,
     SKUUpdateSerializer,
     SKUReadSerializer,
-    ReserveCommandSerializer,
+    ReserveRequestSerializer,
+    UnreserveRequestSerializer,
     FulfillCommandSerializer,
     ModerationEventSerializer,
     InvoiceWriteSerializer,
@@ -594,33 +605,52 @@ class CategoryDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _reserve_response(order_id, reserved_at) -> dict:
+    """openapi: ReserveResponse."""
+    return {
+        "order_id": str(order_id),
+        "status": "RESERVED",
+        "reserved_at": reserved_at,
+    }
+
+
 class ReserveView(APIView):
+    """POST /api/v1/inventory/reserve — резерв по order_id (идемпотентность на пару order_id+sku)."""
+
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = ReserveCommandSerializer(data=request.data)
+        serializer = ReserveRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["order_id"]
         items = serializer.validated_data["items"]
-        idem_key = serializer.validated_data["idempotency_key"]
-
-        if ProcessedRequest.objects.filter(
-            action=ProcessedRequest.Action.RESERVE, idempotency_key=idem_key
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
 
         with transaction.atomic():
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
                 for sku in SKU.objects.select_related("product").select_for_update().filter(
-                    id__in=sku_ids, deleted=False
+                    id__in=sku_ids
                 )
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            existing = {
+                r.sku_id: r
+                for r in InventoryReservation.objects.select_for_update().filter(
+                    order_id=order_id,
+                    sku_id__in=sku_ids,
+                )
+            }
 
             for item in items:
+                if item["sku_id"] in existing:
+                    continue
                 sku = skus[item["sku_id"]]
                 if sku.active_quantity < item["quantity"]:
                     return Response(
@@ -629,22 +659,38 @@ class ReserveView(APIView):
                     )
 
             out_of_stock_skus = []
+            reserved_at = timezone.now()
             for item in items:
-                sku = skus[item["sku_id"]]
-                sku.active_quantity -= item["quantity"]
-                sku.reserved_quantity += item["quantity"]
+                sku_id = item["sku_id"]
+                if sku_id in existing:
+                    continue
+                sku = skus[sku_id]
+                quantity = item["quantity"]
+                sku.active_quantity -= quantity
+                sku.reserved_quantity += quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
+                InventoryReservation.objects.create(
+                    order_id=order_id,
+                    sku_id=sku_id,
+                    quantity=quantity,
+                    reserved_at=reserved_at,
+                )
                 if sku.active_quantity == 0:
                     out_of_stock_skus.append(sku)
 
-            ProcessedRequest.objects.create(
-                action=ProcessedRequest.Action.RESERVE,
-                idempotency_key=idem_key,
+            first_reserved = (
+                InventoryReservation.objects.filter(order_id=order_id)
+                .order_by("reserved_at")
+                .values_list("reserved_at", flat=True)
+                .first()
             )
             for sku in out_of_stock_skus:
                 publish_sku_out_of_stock_to_b2c(sku)
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(
+            _reserve_response(order_id, first_reserved or reserved_at),
+            status=status.HTTP_200_OK,
+        )
 
 
 class FulfillView(APIView):
@@ -697,47 +743,61 @@ class FulfillView(APIView):
 
 
 class UnreserveView(APIView):
+    """POST /api/v1/inventory/unreserve — снятие резерва по order_id+sku из хранимой записи."""
+
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = ReserveCommandSerializer(data=request.data)
+        serializer = UnreserveRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        order_id = serializer.validated_data["order_id"]
         items = serializer.validated_data["items"]
-        idem_key = serializer.validated_data["idempotency_key"]
-
-        if ProcessedRequest.objects.filter(
-            action=ProcessedRequest.Action.UNRESERVE, idempotency_key=idem_key
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
 
         with transaction.atomic():
             sku_ids = [item["sku_id"] for item in items]
             skus = {
                 sku.id: sku
-                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids, deleted=False)
+                for sku in SKU.objects.select_for_update().filter(id__in=sku_ids)
             }
             if len(skus) != len(sku_ids):
-                return Response({"code": "INVALID_REQUEST", "message": "One or more SKUs not found"}, status=400)
+                return Response(
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             for item in items:
-                sku = skus[item["sku_id"]]
-                if sku.reserved_quantity < item["quantity"]:
+                sku_id = item["sku_id"]
+                foreign = (
+                    InventoryReservation.objects.select_for_update()
+                    .filter(sku_id=sku_id)
+                    .exclude(order_id=order_id)
+                    .first()
+                )
+                if foreign is not None:
                     return Response(
-                        {"code": "INVALID_REQUEST", "message": "Cannot unreserve more than reserved"},
-                        status=status.HTTP_400_BAD_REQUEST,
+                        {
+                            "code": "FORBIDDEN",
+                            "message": "Cannot unreserve reservation belonging to another order",
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
                     )
 
             for item in items:
-                sku = skus[item["sku_id"]]
-                sku.active_quantity += item["quantity"]
-                sku.reserved_quantity -= item["quantity"]
+                sku_id = item["sku_id"]
+                reservation = (
+                    InventoryReservation.objects.select_for_update()
+                    .filter(order_id=order_id, sku_id=sku_id)
+                    .first()
+                )
+                if reservation is None:
+                    continue
+                sku = skus[sku_id]
+                quantity = reservation.quantity
+                sku.active_quantity += quantity
+                sku.reserved_quantity -= quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
-
-            ProcessedRequest.objects.create(
-                action=ProcessedRequest.Action.UNRESERVE,
-                idempotency_key=idem_key,
-            )
+                reservation.delete()
 
         return Response({"ok": True}, status=status.HTTP_200_OK)
 

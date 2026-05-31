@@ -77,9 +77,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/v1/reserve:
+  /api/v1/inventory/reserve:
     post:
-      summary: Reserve SKU quantities
+      summary: Reserve SKU quantities for an order
       parameters:
         - in: header
           name: X-Service-Key
@@ -91,10 +91,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReserveCommand"
+              $ref: "#/components/schemas/ReserveRequest"
       responses:
         "200":
           description: Reservation applied or idempotent replay.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReserveResponse"
         "401":
           description: Missing or invalid service key.
         "409":
@@ -132,9 +136,9 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
-  /api/v1/unreserve:
+  /api/v1/inventory/unreserve:
     post:
-      summary: Release reserved SKU quantities
+      summary: Release reserved SKU quantities for an order
       parameters:
         - in: header
           name: X-Service-Key
@@ -146,12 +150,12 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/ReserveCommand"
+              $ref: "#/components/schemas/UnreserveRequest"
       responses:
         "200":
           description: Unreserve applied or idempotent replay.
-        "400":
-          description: Trying to unreserve more than reserved.
+        "403":
+          description: Cannot unreserve reservation belonging to another order.
         "401":
           description: Missing or invalid service key.
   /api/v1/events/moderation:
@@ -265,17 +269,46 @@ components:
         quantity:
           type: integer
           minimum: 1
-    ReserveCommand:
+    ReserveRequest:
       type: object
-      required: [items, idempotency_key]
+      required: [order_id, items]
       properties:
+        order_id:
+          type: string
+          format: uuid
         items:
           type: array
           items:
             $ref: "#/components/schemas/ReserveItem"
-        idempotency_key:
+    ReserveResponse:
+      type: object
+      required: [order_id, status, reserved_at]
+      properties:
+        order_id:
           type: string
           format: uuid
+        status:
+          type: string
+          enum: [RESERVED]
+        reserved_at:
+          type: string
+          format: date-time
+    UnreserveRequest:
+      type: object
+      required: [order_id, items]
+      properties:
+        order_id:
+          type: string
+          format: uuid
+        items:
+          type: array
+          items:
+            type: object
+            required: [sku_id]
+            properties:
+              sku_id:
+                type: string
+                format: uuid
     ModerationEvent:
       type: object
       required: [sku_id, status, hard_block, idempotency_key]
