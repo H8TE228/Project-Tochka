@@ -10,13 +10,18 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from seller_cabinet.exceptions import AlreadyDeleted, HardBlockedForbidden, NotOwner
-from seller_cabinet.authentication import JWTAuthentication, RequireServiceKeyAuthentication, ServiceKeyAuthentication
+from seller_cabinet.authentication import (
+    JWTAuthentication,
+    PublicCatalogAuthentication,
+    RequireServiceKeyAuthentication,
+)
 from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated
 
 from .models import Product, SKU, Seller, Invoice, Category, ProcessedRequest, ProcessedModerationEvent
 from .serializers import (
     ProductReadSerializer,
-    ProductCatalogSerializer,
+    ProductIdsBatchSerializer,
+    product_public_paginated_response,
     ProductSellerListSerializer,
     ProductWriteSerializer,
     SKUWriteSerializer,
@@ -120,6 +125,53 @@ def _filter_products_by_title_search(qs, search: str):
     return qs.filter(pk__in=matching_ids)
 
 
+def _parse_catalog_page_size(request) -> tuple[int, int]:
+    try:
+        page = int(request.query_params.get("page", 1))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        size = int(request.query_params.get("size", 20))
+    except (TypeError, ValueError):
+        size = 20
+    page = max(1, page)
+    size = max(1, min(size, 100))
+    return page, size
+
+
+def _public_catalog_queryset():
+    """Видимые в B2C товары; seller/images/characteristics/skus — одним запросом."""
+    visible_skus = SKU.objects.filter(
+        active_quantity__gt=0,
+    ).prefetch_related("images", "characteristics")
+    return (
+        Product.objects.filter(
+            deleted=False,
+            status=Product.Status.MODERATED,
+            skus__active_quantity__gt=0,
+        )
+        .exclude(status=Product.Status.HARD_BLOCKED)
+        .select_related("seller", "category")
+        .prefetch_related(
+            "images",
+            "characteristics",
+            Prefetch("skus", queryset=visible_skus),
+        )
+        .distinct()
+        .order_by("-created_at")
+    )
+
+
+def _public_catalog_response(request, queryset) -> Response:
+    page, size = _parse_catalog_page_size(request)
+    total = queryset.count()
+    offset = (page - 1) * size
+    items = list(queryset[offset : offset + size])
+    return Response(
+        product_public_paginated_response(items, total=total, page=page, size=size)
+    )
+
+
 def _seller_product_list_response(request, seller: Seller) -> Response:
     """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
     qs = (
@@ -179,64 +231,57 @@ class ProductListView(APIView):
         return _seller_product_list_response(request, seller)
 
 
-class ProductCreateView(APIView):
-    """POST /api/v1/products — US-B2B-01 (канон-flow B2B-1)."""
+class PublicProductCatalogView(APIView):
+    """
+    GET/POST /api/v1/products — B2C-каталог (US-B2B-07).
+    GET /api/v1/public/products — тот же каталог для buyer-cabinet.
+    POST с product_ids в теле — выборка по id товара.
+    """
 
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSeller]
+    authentication_classes = [PublicCatalogAuthentication]
+    permission_classes = [IsServiceAuthenticated]
+
+    def get(self, request):
+        return _public_catalog_response(request, _public_catalog_queryset())
+
+    def post(self, request):
+        serializer = ProductIdsBatchSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        queryset = _public_catalog_queryset()
+        product_ids = serializer.validated_data.get("product_ids") or []
+        if product_ids:
+            queryset = queryset.filter(id__in=product_ids)
+        return _public_catalog_response(request, queryset)
+
+
+class ProductsView(APIView):
+    """GET/POST (batch) каталог + POST (create) создание товара на /api/v1/products."""
 
     def get_authenticators(self):
         if self.request.method == "GET":
-            return [RequireServiceKeyAuthentication()]
-        return super().get_authenticators()
+            return [PublicCatalogAuthentication()]
+        if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
+            return [PublicCatalogAuthentication()]
+        return [JWTAuthentication()]
 
     def get_permissions(self):
         if self.request.method == "GET":
             return [IsServiceAuthenticated()]
-        return super().get_permissions()
+        if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
+            return [IsServiceAuthenticated()]
+        return [IsSeller()]
+
+    def get(self, request):
+        return PublicProductCatalogView.get(self, request)
 
     def post(self, request):
+        if request.headers.get("X-Service-Key"):
+            return PublicProductCatalogView.post(self, request)
         seller = get_or_create_seller(request.user)
         serializer = ProductWriteSerializer(data=request.data, context={"seller": seller})
         serializer.is_valid(raise_exception=True)
         product = serializer.save()
         return Response(ProductReadSerializer(product).data, status=status.HTTP_201_CREATED)
-
-    def get(self, request):
-        if request.headers.get("X-Service-Key"):
-            ids_raw = request.query_params.get("ids")
-            ids = [x.strip() for x in ids_raw.split(",")] if ids_raw else []
-            queryset = Product.objects.filter(
-                deleted=False,
-                status=Product.Status.MODERATED,
-                skus__active_quantity__gt=0,
-                skus__deleted=False,
-            ).exclude(status=Product.Status.HARD_BLOCKED).distinct()
-            if ids:
-                queryset = queryset.filter(skus__id__in=ids)
-            queryset = queryset.select_related("category").prefetch_related(
-                "skus",
-            )
-            visible_products = []
-            for product in queryset:
-                visible_skus = [
-                    sku for sku in product.skus.all()
-                    if not sku.deleted
-                    and (not ids or str(sku.id) in ids)
-                    and sku.active_quantity > 0
-                ]
-                if not visible_skus:
-                    continue
-                product.visible_skus = visible_skus
-                visible_products.append(product)
-
-            data = ProductCatalogSerializer(visible_products, many=True).data
-            for item, product in zip(data, visible_products):
-                item["skus"] = [
-                    sku for sku in item["skus"]
-                    if any(str(vs.id) == sku["id"] for vs in product.visible_skus)
-                ]
-            return Response(data)
 
 
 class ProductDetailView(APIView):
