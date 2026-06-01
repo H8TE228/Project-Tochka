@@ -5,11 +5,22 @@ from django.conf import settings
 
 
 ALLOWED_SORTS = ("price_asc", "price_desc", "popularity", "new")
+UPSTREAM_SORTS = {
+    "popularity": "popular",
+    "new": "created_desc",
+}
+FILTER_PARAM_ALIASES = {
+    "category_id": "category_id",
+    "price_min": "min_price",
+    "price_max": "max_price",
+    "seller_id": "seller_id",
+}
+PUBLIC_PRODUCT_PARAMS = ("category_id", "sort")
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
 B2B_TIMEOUT_SEC = 3
 MIN_SEARCH_LENGTH = 3
-MAX_SEARCH_LENGTH = 255
+MAX_SEARCH_LENGTH = 200
 
 
 class UpstreamUnavailable(Exception):
@@ -42,7 +53,7 @@ def validate_search(search: str | None) -> str | None:
     if len(search) < MIN_SEARCH_LENGTH:
         raise ValueError("Search query must be at least 3 characters")
     if len(search) > MAX_SEARCH_LENGTH:
-        raise ValueError("Search query must be at most 255 characters")
+        raise ValueError("Search query must be at most 200 characters")
     return search
 
 
@@ -54,22 +65,32 @@ def query_params_as_pairs(query_params) -> list[tuple[str, str]]:
     return pairs
 
 
+def public_products_param_key(key: str) -> str | None:
+    if key == "q":
+        return "search"
+    if key in PUBLIC_PRODUCT_PARAMS:
+        return key
+    if key.startswith("filter[") and key.endswith("]"):
+        filter_name = key[len("filter["):-1]
+        if filter_name in FILTER_PARAM_ALIASES:
+            return FILTER_PARAM_ALIASES[filter_name]
+        return f"filters[{filter_name}]"
+    return None
+
+
 def public_products_params(query_params, limit: int, offset: int) -> list[tuple[str, str]]:
     params = []
     page = offset // limit + 1
-    has_q = "q" in query_params
 
     for key, values in query_params.lists():
         if key in ("limit", "offset"):
             continue
-        upstream_key = key
-        if key == "search":
-            if has_q:
-                continue
-            upstream_key = "q"
-        elif key.startswith("filters["):
-            upstream_key = "filter[" + key[len("filters["):]
+        upstream_key = public_products_param_key(key)
+        if upstream_key is None:
+            continue
         for value in values:
+            if upstream_key == "sort":
+                value = UPSTREAM_SORTS.get(value, value)
             params.append((upstream_key, value))
 
     params.append(("page", str(page)))

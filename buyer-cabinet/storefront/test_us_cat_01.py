@@ -96,7 +96,7 @@ class CatalogTests(SimpleTestCase):
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
         self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/v1/public/products")
         self.assertIn(("category_id", "123e4567-e89b-12d3-a456-426614174001"), kwargs["params"])
-        self.assertIn(("filter[brand]", "Apple"), kwargs["params"])
+        self.assertIn(("filters[brand]", "Apple"), kwargs["params"])
         self.assertIn(("sort", "price_asc"), kwargs["params"])
         self.assertIn(("page", "1"), kwargs["params"])
         self.assertIn(("size", "1"), kwargs["params"])
@@ -170,3 +170,12 @@ class CatalogTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.data["code"], "UPSTREAM_UNAVAILABLE")
+
+    @patch("storefront.services.requests.get")
+    def test_public_sort_aliases_are_translated_for_b2b(self, get_mock):
+        get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
+
+        response = self.client.get("/api/v1/catalog/products", {"sort": "new"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(("sort", "created_desc"), get_mock.call_args.kwargs["params"])
