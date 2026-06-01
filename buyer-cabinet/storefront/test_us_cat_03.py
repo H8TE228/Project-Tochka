@@ -7,6 +7,7 @@ from rest_framework.test import APIClient
 
 
 PRODUCT_ID = "770e8400-e29b-41d4-a716-446655440002"
+PRODUCT_CARD_URL = f"/api/v1/catalog/products/{PRODUCT_ID}"
 
 
 class FakeResponse:
@@ -75,7 +76,7 @@ class ProductCardTests(SimpleTestCase):
     def test_product_card_returns_full_data_with_skus(self, get_mock):
         get_mock.return_value = FakeResponse(200, product_payload())
 
-        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+        response = self.client.get(PRODUCT_CARD_URL)
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["id"], PRODUCT_ID)
@@ -108,7 +109,7 @@ class ProductCardTests(SimpleTestCase):
     def test_cost_price_absent_in_response(self, get_mock):
         get_mock.return_value = FakeResponse(200, product_payload())
 
-        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+        response = self.client.get(PRODUCT_CARD_URL)
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("cost_price", response.data["skus"][0])
@@ -122,7 +123,7 @@ class ProductCardTests(SimpleTestCase):
             {"code": "NOT_FOUND", "message": "Product not found"},
         )
 
-        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+        response = self.client.get(PRODUCT_CARD_URL)
 
         self.assertEqual(response.status_code, 404)
         self.assertEqual(response.data["code"], "NOT_FOUND")
@@ -131,7 +132,7 @@ class ProductCardTests(SimpleTestCase):
     def test_sku_without_stock_is_shown_as_unavailable(self, get_mock):
         get_mock.return_value = FakeResponse(200, product_payload())
 
-        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+        response = self.client.get(PRODUCT_CARD_URL)
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["skus"][0]["in_stock"])
@@ -141,7 +142,7 @@ class ProductCardTests(SimpleTestCase):
     def test_product_card_b2b_unavailable_returns_502(self, get_mock):
         get_mock.side_effect = ConnectionError("B2B is down")
 
-        response = self.client.get(f"/api/v1/products/{PRODUCT_ID}")
+        response = self.client.get(PRODUCT_CARD_URL)
 
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.data["code"], "UPSTREAM_UNAVAILABLE")

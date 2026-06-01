@@ -18,5 +18,5 @@ urlpatterns = [
         CategoryFiltersView.as_view(),
         name="category-filters",
     ),
-    path("products/<uuid:product_id>", ProductCardView.as_view(), name="product-card"),
+    path("catalog/products/<uuid:product_id>", ProductCardView.as_view(), name="product-card"),
 ]
