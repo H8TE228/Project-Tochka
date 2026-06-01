@@ -31,8 +31,6 @@ class ProductCatalogView(APIView):
 
     def get(self, request):
         search = request.query_params.get("q")
-        if search is None:
-            search = request.query_params.get("search")
 
         try:
             validate_sort(request.query_params.get("sort"))

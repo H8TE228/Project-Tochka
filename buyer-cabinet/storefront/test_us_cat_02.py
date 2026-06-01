@@ -70,9 +70,9 @@ class SearchTests(SimpleTestCase):
         _, kwargs = get_mock.call_args
         self.assertEqual(kwargs["headers"], {"X-Service-Key": "test-service-key"})
         self.assertEqual(get_mock.call_args.args[0], "http://b2b.test/api/v1/public/products")
-        self.assertIn(("q", "iPhone"), kwargs["params"])
+        self.assertIn(("search", "iPhone"), kwargs["params"])
         self.assertIn(("category_id", "123e4567-e89b-12d3-a456-426614174001"), kwargs["params"])
-        self.assertIn(("filter[brand]", "Apple"), kwargs["params"])
+        self.assertIn(("filters[brand]", "Apple"), kwargs["params"])
         self.assertIn(("sort", "price_asc"), kwargs["params"])
         self.assertIn(("page", "1"), kwargs["params"])
         self.assertIn(("size", "20"), kwargs["params"])
@@ -97,7 +97,29 @@ class SearchTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["items"], [])
-        self.assertIn(("q", "iPhone%15_'"), get_mock.call_args.kwargs["params"])
+        self.assertIn(("search", "iPhone%15_'"), get_mock.call_args.kwargs["params"])
+        self.assertIn(("sort", "created_desc"), get_mock.call_args.kwargs["params"])
+
+    @patch("storefront.services.requests.get")
+    def test_long_query_returns_400(self, get_mock):
+        response = self.client.get("/api/v1/catalog/products", {"q": "a" * 201})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "INVALID_REQUEST")
+        self.assertEqual(response.data["message"], "Search query must be at most 200 characters")
+        get_mock.assert_not_called()
+
+    @patch("storefront.services.requests.get")
+    def test_undocumented_search_param_is_not_forwarded(self, get_mock):
+        get_mock.return_value = FakeResponse(200, {"total": 0, "items": []})
+
+        response = self.client.get(
+            "/api/v1/catalog/products",
+            {"search": "ignored"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(("search", "ignored"), get_mock.call_args.kwargs["params"])
 
     @patch("storefront.services.requests.get")
     def test_empty_results_returns_200(self, get_mock):
