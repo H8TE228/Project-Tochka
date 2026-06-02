@@ -147,3 +147,37 @@ class ProductCardView(APIView):
             return Response(upstream_response.json(), status=upstream_response.status_code)
 
         return Response(product_card_response(upstream_response.json()))
+
+
+class SimilarProductsView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, product_id):
+        
+        limit = normalize_pagination(
+            request.query_params.get("limit"),
+            default=10,
+            minimum=1,
+            maximum=20,
+        )
+        offset = normalize_pagination(request.query_params.get("offset"), default=0, minimum=0)
+
+        try:
+            upstream_response = b2b_get(
+                f"/api/v1/public/products/{product_id}/similar",
+                public_products_params(request.query_params, limit=limit, offset=offset),
+            )
+        except UpstreamUnavailable:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        
+        if upstream_response.status_code >= 500:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(upstream_response.json(), status=upstream_response.status_code)

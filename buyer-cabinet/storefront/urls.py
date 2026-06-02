@@ -6,6 +6,7 @@ from .views import (
     HealthCheckView,
     ProductCardView,
     ProductCatalogView,
+    SimilarProductsView,
 )
 
 
@@ -19,4 +20,5 @@ urlpatterns = [
         name="category-filters",
     ),
     path("catalog/products/<uuid:product_id>", ProductCardView.as_view(), name="product-card"),
+    path("catalog/products/<uuid:product_id>/similar", SimilarProductsView.as_view(), name="similar-products"),
 ]
