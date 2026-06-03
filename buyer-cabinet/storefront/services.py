@@ -3,6 +3,9 @@ from urllib.parse import urljoin
 import requests
 from django.conf import settings
 
+from rest_framework.exceptions import NotFound, APIException, ValidationError
+from rest_framework import status
+
 
 ALLOWED_SORTS = ("price_asc", "price_desc", "popularity", "new")
 UPSTREAM_SORTS = {
@@ -25,6 +28,80 @@ MAX_SEARCH_LENGTH = 200
 
 class UpstreamUnavailable(Exception):
     pass
+
+
+class BrokenHierarchyException(APIException):
+    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    default_detail = {
+        "error": "orphan_node",
+        "message": "category hierarchy is broken"
+    }
+    default_code = "orphan_node"
+
+
+class UpstreamException(APIException):
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_detail = {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"}
+    default_code = "UPSTREAM_UNAVAILABLE"
+
+
+def get_category_tree(categories: list[dict]) -> list[dict]:
+    tree = []
+    nodes = {}
+    existing_ids = set()
+    for category in categories:
+        cat = dict(category)
+        cat_id = cat["id"]
+        parent_id = cat["parent_id"]
+
+        existing_ids.add(cat_id)
+
+        if cat_id not in nodes: 
+            nodes[cat_id] = {"children": []}
+        
+        nodes[cat_id].update(cat)
+        current_node = nodes[cat_id]
+
+        if parent_id is None:
+            tree.append(current_node)
+        else:
+            if parent_id not in nodes:
+                nodes[parent_id] = {"children": []}
+            nodes[parent_id]["children"].append(current_node)
+
+    for node_id in nodes:
+        if node_id not in existing_ids:
+            raise ValueError(f"Найдена категория сирота c родительским id {node_id}")
+    return tree
+
+
+def get_category_index(categories: list[dict]) -> dict[str, dict]:
+    return {str(category["id"]): category for category in categories}
+
+
+def get_category_path(categories: list[dict], category_id: str) -> list[dict]:
+    index = get_category_index(categories=categories)
+    category = index.get(str(category_id))
+    if category is None:
+        raise NotFound(code="NOT_FOUND", detail="Category not found")
+    path = []
+    seen = set()
+    current = category
+    while current is not None:
+        current_id = str(current["id"])
+        if current_id in seen:
+            raise BrokenHierarchyException()
+        seen.add(current_id)
+        path.append(current)
+        parent_id = current.get("parent_id")
+        if parent_id is None:
+            break
+        parent = index.get(str(parent_id))
+        if parent is None:
+            raise BrokenHierarchyException()
+        current = parent
+    path.reverse()
+    return path
 
 
 def normalize_pagination(value, default=0, minimum=0, maximum=None) -> int:
@@ -110,6 +187,28 @@ def b2b_get(path: str, params: list[tuple[str, str]]):
     except requests.RequestException as exc:
         raise UpstreamUnavailable from exc
     return response
+
+
+def b2b_get_product(product_id: str) -> dict:
+    try:
+        upstream_response = b2b_get(f"/api/v1/public/products/{product_id}", [])
+    except UpstreamUnavailable:
+        raise UpstreamException()
+    if upstream_response.status_code == 404:
+        raise NotFound(code="NOT_FOUND", detail="Product not found")
+    if upstream_response.status_code >= 400:
+        raise ValidationError(detail="Invalid product_id")
+    return upstream_response.json()
+
+
+def b2b_get_products(params: list[tuple[str, str]]) -> dict:
+    try:
+        upstream_response = b2b_get("/api/v1/public/products", params)
+    except UpstreamUnavailable:
+        raise UpstreamException()
+    if upstream_response.status_code >= 400:
+        raise ValidationError(detail="Invalid params")
+    return upstream_response.json()
 
 
 def int_value(value, default=0) -> int:

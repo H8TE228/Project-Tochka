@@ -7,6 +7,10 @@ from .views import (
     ProductCardView,
     ProductCatalogView,
     SimilarProductsView,
+    CategoryView,
+    CategoryTreeView,
+    CategoryDetailView,
+    CategoryBreadcrumbsView,
 )
 
 
@@ -19,6 +23,10 @@ urlpatterns = [
         CategoryFiltersView.as_view(),
         name="category-filters",
     ),
+    path("catalog/categories", CategoryView.as_view(), name="categories"),
+    path("catalog/categories/tree", CategoryTreeView.as_view(), name="category-tree"),
+    path("catalog/categories/<uuid:category_id>", CategoryDetailView.as_view(), name="category-detail"),
+    path("breadcrumbs", CategoryBreadcrumbsView.as_view(), name="category-breadcrumbs"),
     path("catalog/products/<uuid:product_id>", ProductCardView.as_view(), name="product-card"),
     path("catalog/products/<uuid:product_id>/similar", SimilarProductsView.as_view(), name="similar-products"),
 ]
