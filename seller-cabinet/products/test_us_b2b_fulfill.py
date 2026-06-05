@@ -7,12 +7,16 @@ from products.models import ProcessedRequest
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
+FULFILL_URL = "/api/v1/inventory/fulfill"
 
-def _fulfill(order_id, sku_id, quantity):
+
+def _fulfill(order_id, *sku_quantities):
     return {
         "order_id": str(order_id),
-        "sku_id": str(sku_id),
-        "quantity": quantity,
+        "items": [
+            {"sku_id": str(sku_id), "quantity": quantity}
+            for sku_id, quantity in sku_quantities
+        ],
     }
 
 
@@ -26,16 +30,43 @@ def test_fulfill_decreases_reserved_quantity_active_quantity_unchanged(
 
     order_id = uuid.uuid4()
     resp = service_api_client.post(
-        "/api/v1/fulfill",
-        _fulfill(order_id, sku.id, 2),
+        FULFILL_URL,
+        _fulfill(order_id, (sku.id, 2)),
         format="json",
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
+    data = resp.json()
+    assert data["order_id"] == str(order_id)
+    assert data["status"] == "FULFILLED"
+    assert "processed_at" in data
     sku.refresh_from_db()
     assert sku.active_quantity == active_before == 3
     assert sku.reserved_quantity == 3
+
+
+def test_fulfill_multiple_skus_in_one_order(
+    service_api_client, product_factory, sku_factory
+):
+    product = product_factory(status="MODERATED")
+    sku1 = sku_factory(product, active_quantity=10, reserved_quantity=4)
+    sku2 = sku_factory(product, active_quantity=5, reserved_quantity=6)
+    order_id = uuid.uuid4()
+
+    resp = service_api_client.post(
+        FULFILL_URL,
+        _fulfill(order_id, (sku1.id, 2), (sku2.id, 3)),
+        format="json",
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "FULFILLED"
+    sku1.refresh_from_db()
+    sku2.refresh_from_db()
+    assert sku1.active_quantity == 10
+    assert sku1.reserved_quantity == 2
+    assert sku2.active_quantity == 5
+    assert sku2.reserved_quantity == 3
 
 
 def test_idempotent_fulfill_no_double_deduction(service_api_client, product_factory, sku_factory):
@@ -43,13 +74,16 @@ def test_idempotent_fulfill_no_double_deduction(service_api_client, product_fact
     product = product_factory(status="MODERATED")
     sku = sku_factory(product, active_quantity=0, reserved_quantity=5)
     order_id = uuid.uuid4()
-    body = _fulfill(order_id, sku.id, 2)
+    body = _fulfill(order_id, (sku.id, 2))
 
-    first = service_api_client.post("/api/v1/fulfill", body, format="json")
-    second = service_api_client.post("/api/v1/fulfill", body, format="json")
+    first = service_api_client.post(FULFILL_URL, body, format="json")
+    second = service_api_client.post(FULFILL_URL, body, format="json")
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert first.json()["status"] == "FULFILLED"
+    assert second.json()["status"] == "FULFILLED"
+    assert first.json()["processed_at"] == second.json()["processed_at"]
     sku.refresh_from_db()
     assert sku.reserved_quantity == 3
     assert (
@@ -66,8 +100,8 @@ def test_missing_service_key_returns_401(product_factory, sku_factory):
     sku = sku_factory(product, reserved_quantity=1)
     client = APIClient()
     resp = client.post(
-        "/api/v1/fulfill",
-        _fulfill(uuid.uuid4(), sku.id, 1),
+        FULFILL_URL,
+        _fulfill(uuid.uuid4(), (sku.id, 1)),
         format="json",
     )
     assert resp.status_code == 401

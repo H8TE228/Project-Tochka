@@ -23,7 +23,7 @@ from .serializers import (
     SKUUpdateSerializer,
     SKUReadSerializer,
     ReserveCommandSerializer,
-    FulfillCommandSerializer,
+    InventoryOrderRequestSerializer,
     ModerationEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
@@ -602,53 +602,76 @@ class ReserveView(APIView):
         return Response({"ok": True}, status=status.HTTP_200_OK)
 
 
+def _inventory_order_response(order_id, processed_at) -> dict:
+    return {
+        "order_id": str(order_id),
+        "status": "FULFILLED",
+        "processed_at": processed_at.isoformat(),
+    }
+
+
 class FulfillView(APIView):
     """
-    POST /api/v1/fulfill — доставка заказа: уменьшить reserved_quantity, active_quantity не трогать.
-    Идемпотентность по order_id.
+    POST /api/v1/inventory/fulfill — доставка заказа: уменьшить reserved_quantity,
+    active_quantity не трогать. Идемпотентность по order_id.
     """
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = FulfillCommandSerializer(data=request.data)
+        serializer = InventoryOrderRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order_id = serializer.validated_data["order_id"]
-        sku_id = serializer.validated_data["sku_id"]
-        quantity = serializer.validated_data["quantity"]
+        items = serializer.validated_data["items"]
 
-        if ProcessedRequest.objects.filter(
+        existing = ProcessedRequest.objects.filter(
             action=ProcessedRequest.Action.FULFILL, idempotency_key=order_id
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
+        ).first()
+        if existing:
+            return Response(
+                _inventory_order_response(order_id, existing.created_at),
+                status=status.HTTP_200_OK,
+            )
 
         with transaction.atomic():
-            try:
-                sku = SKU.objects.select_for_update().get(pk=sku_id, deleted=False)
-            except SKU.DoesNotExist:
+            sku_ids = [item["sku_id"] for item in items]
+            skus = {
+                sku.id: sku
+                for sku in SKU.objects.select_for_update().filter(
+                    id__in=sku_ids, deleted=False
+                )
+            }
+            if len(skus) != len(set(sku_ids)):
                 return Response(
-                    {"code": "INVALID_REQUEST", "message": "SKU not found"},
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if sku.reserved_quantity < quantity:
-                return Response(
-                    {
-                        "code": "INVALID_REQUEST",
-                        "message": "Cannot fulfill more than reserved",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            for item in items:
+                sku = skus[item["sku_id"]]
+                if sku.reserved_quantity < item["quantity"]:
+                    return Response(
+                        {
+                            "code": "INVALID_REQUEST",
+                            "message": "Cannot fulfill more than reserved",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-            sku.reserved_quantity -= quantity
-            sku.save(update_fields=["reserved_quantity", "updated_at"])
+            for item in items:
+                sku = skus[item["sku_id"]]
+                sku.reserved_quantity -= item["quantity"]
+                sku.save(update_fields=["reserved_quantity", "updated_at"])
 
-            ProcessedRequest.objects.create(
+            processed = ProcessedRequest.objects.create(
                 action=ProcessedRequest.Action.FULFILL,
                 idempotency_key=order_id,
             )
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(
+            _inventory_order_response(order_id, processed.created_at),
+            status=status.HTTP_200_OK,
+        )
 
 
 class UnreserveView(APIView):

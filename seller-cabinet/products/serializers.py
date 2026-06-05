@@ -307,10 +307,9 @@ class ReserveCommandSerializer(serializers.Serializer):
     idempotency_key = serializers.UUIDField()
 
 
-class FulfillCommandSerializer(serializers.Serializer):
+class InventoryOrderRequestSerializer(serializers.Serializer):
     order_id = serializers.UUIDField()
-    sku_id = serializers.UUIDField()
-    quantity = serializers.IntegerField(min_value=1)
+    items = ReserveItemSerializer(many=True, min_length=1)
 
 
 class ModerationEventSerializer(serializers.Serializer):
