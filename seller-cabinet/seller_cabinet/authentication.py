@@ -57,6 +57,28 @@ class RequireServiceKeyAuthentication(BaseAuthentication):
         return "X-Service-Key"
 
 
+class PublicCatalogAuthentication(BaseAuthentication):
+    """
+    B2C-каталог: только X-Service-Key (service-to-service).
+    Запрос только с Bearer без сервисного ключа → 401.
+    """
+
+    def authenticate(self, request):
+        has_bearer = request.META.get("HTTP_AUTHORIZATION", "").startswith("Bearer ")
+        key = request.headers.get("X-Service-Key")
+        if has_bearer and not key:
+            raise NotAuthenticated("Service key required for catalog access")
+        if not key:
+            raise NotAuthenticated("Missing X-Service-Key")
+        expected = settings.SERVICE_API_KEY
+        if not expected or key != expected:
+            raise AuthenticationFailed("Invalid X-Service-Key")
+        return ServiceUser(), key
+
+    def authenticate_header(self, request):
+        return "X-Service-Key"
+
+
 class JWTAuthentication(BaseAuthentication):
     """Validate access tokens issued by the auth service (shared SECRET_KEY)."""
 

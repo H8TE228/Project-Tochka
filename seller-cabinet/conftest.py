@@ -55,7 +55,7 @@ def service_key(settings):
 @pytest.fixture
 def service_api_client(service_key):
     client = APIClient()
-    client.credentials(HTTP_X_SERVICE_KEY=service_key)
+    client.credentials(HTTP_X_SERVICE_KEY=service_key, HTTP_X_SERVICE_ID="test-service")
     return client
 
 

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
@@ -7,12 +8,15 @@ from products.models import BlockingReason, ProcessedModerationEvent, Product
 
 pytestmark = pytest.mark.django_db(transaction=True)
 
+MODERATION_URL = "/api/v1/events/moderation"
 
-def _event_payload(sku_id, status, hard_block=False, field_reports=None, blocking_reason=None, idem=None):
+
+def _event_payload(product_id, status, hard_block=False, field_reports=None, blocking_reason=None, idem=None):
     return {
-        "sku_id": str(sku_id),
+        "product_id": str(product_id),
         "status": status,
         "hard_block": hard_block,
+        "occurred_at": datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
         "field_reports": field_reports,
         "blocking_reason": blocking_reason,
         "idempotency_key": str(idem or uuid.uuid4()),
@@ -27,15 +31,16 @@ def test_moderated_event_clears_blocking_data(service_api_client, product_factor
         moderator_comment="details",
         field_reports=[{"field_name": "title", "comment": "bad"}],
     )
-    sku = sku_factory(product)
+    sku_factory(product)
 
     resp = service_api_client.post(
-        "/api/v1/events/moderation",
-        _event_payload(sku.id, status="MODERATED"),
+        MODERATION_URL,
+        _event_payload(product.id, status="MODERATED"),
         format="json",
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 204
+    assert resp.content == b""
     product.refresh_from_db()
     assert product.status == Product.Status.MODERATED
     assert product.blocking_reason is None
@@ -44,13 +49,13 @@ def test_moderated_event_clears_blocking_data(service_api_client, product_factor
 
 def test_blocked_soft_saves_field_reports(service_api_client, product_factory, sku_factory):
     product = product_factory(status=Product.Status.ON_MODERATION)
-    sku = sku_factory(product)
+    sku_factory(product)
     reports = [{"field_name": "description", "comment": "invalid"}]
 
     resp = service_api_client.post(
-        "/api/v1/events/moderation",
+        MODERATION_URL,
         _event_payload(
-            sku.id,
+            product.id,
             status="BLOCKED",
             hard_block=False,
             field_reports=reports,
@@ -59,7 +64,7 @@ def test_blocked_soft_saves_field_reports(service_api_client, product_factory, s
         format="json",
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 204
     product.refresh_from_db()
     assert product.status == Product.Status.BLOCKED
     assert product.field_reports == reports
@@ -67,13 +72,13 @@ def test_blocked_soft_saves_field_reports(service_api_client, product_factory, s
 
 def test_blocked_hard_sets_terminal_status(service_api_client, product_factory, sku_factory):
     product = product_factory(status=Product.Status.ON_MODERATION)
-    sku = sku_factory(product)
+    sku_factory(product)
 
     with patch("products.services._post_event") as mock_post:
         resp = service_api_client.post(
-            "/api/v1/events/moderation",
+            MODERATION_URL,
             _event_payload(
-                sku.id,
+                product.id,
                 status="BLOCKED",
                 hard_block=True,
                 field_reports=[{"field_name": "title", "comment": "forbidden"}],
@@ -82,7 +87,7 @@ def test_blocked_hard_sets_terminal_status(service_api_client, product_factory, 
             format="json",
         )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 204
     product.refresh_from_db()
     assert product.status == Product.Status.HARD_BLOCKED
     assert any(call.args[1].get("event") == "PRODUCT_BLOCKED" for call in mock_post.call_args_list)
@@ -107,10 +112,10 @@ def test_hard_blocked_product_rejects_seller_edits(api_client, product_factory, 
 
 def test_duplicate_event_same_idempotency_key_no_side_effects(service_api_client, product_factory, sku_factory):
     product = product_factory(status=Product.Status.ON_MODERATION)
-    sku = sku_factory(product)
+    sku_factory(product)
     idem = uuid.uuid4()
     payload = _event_payload(
-        sku.id,
+        product.id,
         status="BLOCKED",
         hard_block=False,
         field_reports=[{"field_name": "description", "comment": "invalid"}],
@@ -118,23 +123,49 @@ def test_duplicate_event_same_idempotency_key_no_side_effects(service_api_client
         idem=idem,
     )
 
-    first = service_api_client.post("/api/v1/events/moderation", payload, format="json")
-    second = service_api_client.post("/api/v1/events/moderation", payload, format="json")
+    first = service_api_client.post(MODERATION_URL, payload, format="json")
+    second = service_api_client.post(MODERATION_URL, payload, format="json")
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert ProcessedModerationEvent.objects.filter(sku=sku, idempotency_key=idem).count() == 1
+    assert first.status_code == 204
+    assert second.status_code == 204
+    assert (
+        ProcessedModerationEvent.objects.filter(
+            service_id="test-service",
+            idempotency_key=idem,
+        ).count()
+        == 1
+    )
+
+
+def test_different_services_same_idempotency_key_do_not_collide(
+    service_api_client, service_key, product_factory, sku_factory
+):
+    from rest_framework.test import APIClient
+
+    product = product_factory(status=Product.Status.ON_MODERATION)
+    sku_factory(product)
+    idem = uuid.uuid4()
+    payload = _event_payload(product.id, status="MODERATED", idem=idem)
+
+    client_a = APIClient()
+    client_a.credentials(HTTP_X_SERVICE_KEY=service_key, HTTP_X_SERVICE_ID="moderation")
+    client_b = APIClient()
+    client_b.credentials(HTTP_X_SERVICE_KEY=service_key, HTTP_X_SERVICE_ID="b2c-gateway")
+
+    assert client_a.post(MODERATION_URL, payload, format="json").status_code == 204
+    assert client_b.post(MODERATION_URL, payload, format="json").status_code == 204
+    assert ProcessedModerationEvent.objects.filter(idempotency_key=idem).count() == 2
 
 
 def test_missing_service_key_returns_401(product_factory, sku_factory):
     from rest_framework.test import APIClient
 
     product = product_factory(status=Product.Status.ON_MODERATION)
-    sku = sku_factory(product)
+    sku_factory(product)
     client = APIClient()
     resp = client.post(
-        "/api/v1/events/moderation",
-        _event_payload(sku.id, status="MODERATED"),
+        MODERATION_URL,
+        _event_payload(product.id, status="MODERATED"),
         format="json",
     )
     assert resp.status_code == 401

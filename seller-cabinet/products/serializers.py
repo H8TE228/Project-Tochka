@@ -236,15 +236,22 @@ class SKUUpdateSerializer(SKUBaseWriteSerializer):
 
 
 class ProductSellerListSerializer(serializers.ModelSerializer):
-    """openapi: ProductListItem — seller product list."""
+    """openapi: ProductListItem — список товаров продавца."""
     skus_count = serializers.IntegerField(read_only=True)
     total_active_quantity = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = Product
         fields = (
-            "id", "title", "description", "status", "deleted",
-            "created_at", "updated_at", "skus_count", "total_active_quantity",
+            "id",
+            "title",
+            "description",
+            "status",
+            "deleted",
+            "created_at",
+            "updated_at",
+            "skus_count",
+            "total_active_quantity",
         )
 
 
@@ -290,7 +297,7 @@ class ProductReadSerializer(serializers.ModelSerializer):
         return []
 
 
-class ProductCatalogSerializer(serializers.ModelSerializer):
+class ProductPublicResponse(serializers.ModelSerializer):
     """openapi: ProductPublicResponse (B2C каталог, без cost_price у SKU)."""
     seller_id = serializers.UUIDField(source="seller.auth_user_id", read_only=True)
     category_id = serializers.UUIDField(source="category.id", read_only=True)
@@ -303,11 +310,31 @@ class ProductCatalogSerializer(serializers.ModelSerializer):
         model = Product
         fields = (
             "id", "seller_id", "category_id",
-            "name", "slug", "description",
+            "title", "name", "slug", "description",
             "status",
             "images", "characteristics", "skus",
             "created_at", "updated_at",
         )
+
+
+class ProductIdsBatchSerializer(serializers.Serializer):
+    product_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+    )
+
+
+def product_public_paginated_response(items, *, total: int, page: int, size: int) -> dict:
+    """openapi: ProductPublicPaginatedResponse."""
+    pages = (total + size - 1) // size if size else 0
+    return {
+        "items": ProductPublicResponse(items, many=True).data,
+        "total": total,
+        "page": page,
+        "size": size,
+        "pages": pages,
+    }
 
 
 class ReserveItemSerializer(serializers.Serializer):
@@ -315,9 +342,20 @@ class ReserveItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
 
-class ReserveCommandSerializer(serializers.Serializer):
+class ReserveRequestSerializer(serializers.Serializer):
+    """openapi: ReserveRequest."""
+    order_id = serializers.UUIDField()
     items = ReserveItemSerializer(many=True, min_length=1)
-    idempotency_key = serializers.UUIDField()
+
+
+class UnreserveItemSerializer(serializers.Serializer):
+    sku_id = serializers.UUIDField()
+
+
+class UnreserveRequestSerializer(serializers.Serializer):
+    """openapi: UnreserveRequest."""
+    order_id = serializers.UUIDField()
+    items = UnreserveItemSerializer(many=True, min_length=1)
 
 
 class InventoryOrderRequestSerializer(serializers.Serializer):
@@ -326,13 +364,11 @@ class InventoryOrderRequestSerializer(serializers.Serializer):
 
 
 class ModerationEventSerializer(serializers.Serializer):
-    class Status(serializers.ChoiceField):
-        def __init__(self, **kwargs):
-            super().__init__(choices=["MODERATED", "BLOCKED"], **kwargs)
-
-    sku_id = serializers.UUIDField()
-    status = Status()
+    """openapi: ModerationEvent — product_id, status, occurred_at (без event_type)."""
+    product_id = serializers.UUIDField()
+    status = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
     hard_block = serializers.BooleanField()
+    occurred_at = serializers.DateTimeField()
     field_reports = serializers.JSONField(required=False, allow_null=True)
     blocking_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     idempotency_key = serializers.UUIDField()
