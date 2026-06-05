@@ -39,7 +39,7 @@ from .serializers import (
     SKUReadSerializer,
     ReserveRequestSerializer,
     UnreserveRequestSerializer,
-    FulfillCommandSerializer,
+    InventoryOrderRequestSerializer,
     ModerationEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
@@ -108,23 +108,27 @@ def _parse_list_limit_offset(request) -> tuple[int, int]:
     return limit, offset
 
 
+def _parse_include_deleted(request) -> bool | None:
+    raw = request.query_params.get("include_deleted")
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    if normalized in ("true", "1"):
+        return True
+    if normalized in ("false", "0"):
+        return False
+    return None
+
+
 def _apply_seller_list_status_filter(qs, status_raw: str):
-    """Фильтр ?status=ACTIVE|BLOCKED|DELETED."""
+    """Фильтр ?status= по ProductStatus enum."""
     s = (status_raw or "").strip().upper()
     if not s:
         return qs
-    if s == "DELETED":
-        return qs.filter(deleted=True)
-    if s == "BLOCKED":
-        return qs.filter(
-            deleted=False,
-            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
-        )
-    if s == "ACTIVE":
-        return qs.filter(deleted=False).exclude(
-            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
-        )
-    return None  # invalid
+    valid_statuses = {choice.value for choice in Product.Status}
+    if s not in valid_statuses:
+        return None
+    return qs.filter(status=s)
 
 
 def _filter_products_by_title_search(qs, search: str):
@@ -184,19 +188,29 @@ def _public_catalog_response(request, queryset) -> Response:
 
 
 def _seller_product_list_response(request, seller: Seller) -> Response:
-    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
-    qs = (
-        Product.objects.filter(seller=seller)
-        .annotate(
-            skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
-            total_active_quantity=Coalesce(
-                Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
-                Value(0),
-                output_field=IntegerField(),
-            ),
+    """GET /api/v1/products — список товаров продавца (openapi ProductPaginatedResponse)."""
+    include_deleted = _parse_include_deleted(request)
+    if include_deleted is None:
+        return Response(
+            {
+                "code": "INVALID_REQUEST",
+                "message": "include_deleted must be true or false",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
-        .order_by("-created_at")
-    )
+
+    qs = Product.objects.filter(seller=seller)
+    if not include_deleted:
+        qs = qs.filter(deleted=False)
+
+    qs = qs.annotate(
+        skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
+        total_active_quantity=Coalesce(
+            Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
+            Value(0),
+            output_field=IntegerField(),
+        ),
+    ).order_by("-created_at")
 
     search = (request.query_params.get("search") or "").strip()
     if search:
@@ -205,24 +219,25 @@ def _seller_product_list_response(request, seller: Seller) -> Response:
     status_raw = request.query_params.get("status", "")
     filtered = _apply_seller_list_status_filter(qs, status_raw)
     if filtered is None and status_raw.strip():
+        valid_statuses = ", ".join(choice.value for choice in Product.Status)
         return Response(
             {
                 "code": "INVALID_REQUEST",
-                "message": "status must be one of: ACTIVE, BLOCKED, DELETED",
+                "message": f"status must be one of: {valid_statuses}",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
     if filtered is not None:
         qs = filtered
 
-    total = qs.count()
+    total_count = qs.count()
     limit, offset = _parse_list_limit_offset(request)
     page = qs[offset : offset + limit]
 
     return Response(
         {
             "items": ProductSellerListSerializer(page, many=True).data,
-            "total": total,
+            "total_count": total_count,
             "limit": limit,
             "offset": offset,
         }
@@ -231,21 +246,9 @@ def _seller_product_list_response(request, seller: Seller) -> Response:
 
 # ---------- Products ----------
 
-class ProductListView(APIView):
-    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
-
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSeller]
-
-    def get(self, request):
-        seller = resolve_seller_for_jwt(request.user)
-        return _seller_product_list_response(request, seller)
-
-
 class PublicProductCatalogView(APIView):
     """
-    GET/POST /api/v1/products — B2C-каталог (US-B2B-07).
-    GET /api/v1/public/products — тот же каталог для buyer-cabinet.
+    GET/POST /api/v1/public/products — B2C-каталог (US-B2B-07).
     POST с product_ids в теле — выборка по id товара.
     """
 
@@ -266,24 +269,25 @@ class PublicProductCatalogView(APIView):
 
 
 class ProductsView(APIView):
-    """GET/POST (batch) каталог + POST (create) создание товара на /api/v1/products."""
+    """GET — seller list (JWT); POST — create product (JWT) или batch catalog (X-Service-Key)."""
 
     def get_authenticators(self):
         if self.request.method == "GET":
-            return [PublicCatalogAuthentication()]
+            return [JWTAuthentication()]
         if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
             return [PublicCatalogAuthentication()]
         return [JWTAuthentication()]
 
     def get_permissions(self):
         if self.request.method == "GET":
-            return [IsServiceAuthenticated()]
+            return [IsSeller()]
         if self.request.method == "POST" and self.request.headers.get("X-Service-Key"):
             return [IsServiceAuthenticated()]
         return [IsSeller()]
 
     def get(self, request):
-        return PublicProductCatalogView.get(self, request)
+        seller = resolve_seller_for_jwt(request.user)
+        return _seller_product_list_response(request, seller)
 
     def post(self, request):
         if request.headers.get("X-Service-Key"):
@@ -427,7 +431,7 @@ class SKUCreateView(APIView):
 
 
 class SKUDetailView(APIView):
-    """PUT /api/v1/skus/{id} — US-B2B-03."""
+    """PUT/DELETE /api/v1/skus/{id} — US-B2B-03; soft delete SKU."""
     permission_classes = [IsSeller]
 
     def put(self, request, sku_id):
@@ -460,28 +464,24 @@ class SKUDetailView(APIView):
 
         return Response(SKUReadSerializer(sku).data)
 
-
-class SKUDeleteView(APIView):
-    """
-    DELETE /api/v1/products/{product_id}/skus/{sku_id} — soft delete SKU.
-    Error format must be canonical: {"code": "...", "message": "..."}.
-    """
-    permission_classes = [IsSeller]
-
-    def delete(self, request, product_id, sku_id):
+    def delete(self, request, sku_id):
         seller = get_or_create_seller(request.user)
         sku = (
-            SKU.objects.filter(pk=sku_id, deleted=False, product_id=product_id)
+            SKU.objects.filter(pk=sku_id, deleted=False, product__deleted=False)
             .select_related("product")
             .first()
         )
-
-        # Не раскрываем существование чужих SKU/товаров (IDOR) — 404.
-        if sku is None or sku.product.seller_id != seller.id:
+        if sku is None:
             return Response(
                 {"code": "NOT_FOUND", "message": "SKU not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        if sku.product.seller_id != seller.id:
+            raise NotOwner(detail={
+                "code": "NOT_OWNER",
+                "message": "SKU does not belong to the authenticated seller",
+            })
 
         if sku.product.status == Product.Status.HARD_BLOCKED:
             return Response(
@@ -492,8 +492,8 @@ class SKUDeleteView(APIView):
         if sku.reserved_quantity != 0:
             return Response(
                 {
-                    "code": "INVALID_REQUEST",
-                    "message": f"Cannot delete SKU with active reserves (reserved_quantity={sku.reserved_quantity})",
+                    "code": "CONFLICT",
+                    "message": "Cannot delete SKU with active reserves",
                 },
                 status=status.HTTP_409_CONFLICT,
             )
@@ -515,7 +515,7 @@ class SKUDeleteView(APIView):
             if had_active and prior_status == Product.Status.MODERATED:
                 publish_sku_out_of_stock_to_b2c(sku)
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class InvoiceCreateView(APIView):
     permission_classes = [IsSeller]
@@ -693,53 +693,76 @@ class ReserveView(APIView):
         )
 
 
+def _inventory_order_response(order_id, processed_at) -> dict:
+    return {
+        "order_id": str(order_id),
+        "status": "FULFILLED",
+        "processed_at": processed_at.isoformat(),
+    }
+
+
 class FulfillView(APIView):
     """
-    POST /api/v1/fulfill — доставка заказа: уменьшить reserved_quantity, active_quantity не трогать.
-    Идемпотентность по order_id.
+    POST /api/v1/inventory/fulfill — доставка заказа: уменьшить reserved_quantity,
+    active_quantity не трогать. Идемпотентность по order_id.
     """
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        serializer = FulfillCommandSerializer(data=request.data)
+        serializer = InventoryOrderRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order_id = serializer.validated_data["order_id"]
-        sku_id = serializer.validated_data["sku_id"]
-        quantity = serializer.validated_data["quantity"]
+        items = serializer.validated_data["items"]
 
-        if ProcessedRequest.objects.filter(
+        existing = ProcessedRequest.objects.filter(
             action=ProcessedRequest.Action.FULFILL, idempotency_key=order_id
-        ).exists():
-            return Response({"ok": True}, status=status.HTTP_200_OK)
+        ).first()
+        if existing:
+            return Response(
+                _inventory_order_response(order_id, existing.created_at),
+                status=status.HTTP_200_OK,
+            )
 
         with transaction.atomic():
-            try:
-                sku = SKU.objects.select_for_update().get(pk=sku_id, deleted=False)
-            except SKU.DoesNotExist:
+            sku_ids = [item["sku_id"] for item in items]
+            skus = {
+                sku.id: sku
+                for sku in SKU.objects.select_for_update().filter(
+                    id__in=sku_ids, deleted=False
+                )
+            }
+            if len(skus) != len(set(sku_ids)):
                 return Response(
-                    {"code": "INVALID_REQUEST", "message": "SKU not found"},
+                    {"code": "INVALID_REQUEST", "message": "One or more SKUs not found"},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            if sku.reserved_quantity < quantity:
-                return Response(
-                    {
-                        "code": "INVALID_REQUEST",
-                        "message": "Cannot fulfill more than reserved",
-                    },
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+            for item in items:
+                sku = skus[item["sku_id"]]
+                if sku.reserved_quantity < item["quantity"]:
+                    return Response(
+                        {
+                            "code": "INVALID_REQUEST",
+                            "message": "Cannot fulfill more than reserved",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
 
-            sku.reserved_quantity -= quantity
-            sku.save(update_fields=["reserved_quantity", "updated_at"])
+            for item in items:
+                sku = skus[item["sku_id"]]
+                sku.reserved_quantity -= item["quantity"]
+                sku.save(update_fields=["reserved_quantity", "updated_at"])
 
-            ProcessedRequest.objects.create(
+            processed = ProcessedRequest.objects.create(
                 action=ProcessedRequest.Action.FULFILL,
                 idempotency_key=order_id,
             )
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(
+            _inventory_order_response(order_id, processed.created_at),
+            status=status.HTTP_200_OK,
+        )
 
 
 class UnreserveView(APIView):
