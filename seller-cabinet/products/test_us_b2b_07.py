@@ -91,13 +91,15 @@ def test_catalog_paginated_shape(service_api_client, product_factory, sku_factor
     resp = service_api_client.get("/api/v1/public/products", {"page": 1, "size": 10})
 
     assert resp.status_code == 200
-    for key in ("items", "total", "page", "size", "pages"):
+    for key in ("items", "total_count", "offset", "limit"):
         assert key in resp.data
-    assert resp.data["page"] == 1
-    assert resp.data["size"] == 10
+    assert "pages" not in resp.data
+    assert "total" not in resp.data
+    assert resp.data["offset"] == 0
+    assert resp.data["limit"] == 10
 
 
-def test_batch_product_ids_returns_visible_subset(service_api_client, product_factory, sku_factory):
+def test_batch_ids_returns_visible_subset(service_api_client, product_factory, sku_factory):
     visible = product_factory(status=Product.Status.MODERATED)
     visible_sku = sku_factory(visible, active_quantity=5)
 
@@ -105,7 +107,7 @@ def test_batch_product_ids_returns_visible_subset(service_api_client, product_fa
     sku_factory(hidden, active_quantity=5)
 
     resp = service_api_client.post(
-        "/api/v1/products",
+        "/api/v1/public/products",
         {"product_ids": [str(visible.id), str(hidden.id)]},
         format="json",
     )

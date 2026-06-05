@@ -11,9 +11,10 @@ RESERVE_URL = "/api/v1/inventory/reserve"
 UNRESERVE_URL = "/api/v1/inventory/unreserve"
 
 
-def _reserve_payload(items, order_id=None):
+def _reserve_payload(items, order_id=None, idempotency_key=None):
     return {
         "order_id": str(order_id or uuid.uuid4()),
+        "idempotency_key": str(idempotency_key or uuid.uuid4()),
         "items": items,
     }
 
@@ -68,7 +69,12 @@ def test_idempotent_reserve_returns_200_without_double_deduction(service_api_cli
     product = product_factory(status="MODERATED")
     sku = sku_factory(product, active_quantity=10, reserved_quantity=0)
     order_id = uuid.uuid4()
-    payload = _reserve_payload([{"sku_id": str(sku.id), "quantity": 3}], order_id=order_id)
+    idempotency_key = uuid.uuid4()
+    payload = _reserve_payload(
+        [{"sku_id": str(sku.id), "quantity": 3}],
+        order_id=order_id,
+        idempotency_key=idempotency_key,
+    )
 
     first = service_api_client.post(RESERVE_URL, payload, format="json")
     second = service_api_client.post(RESERVE_URL, payload, format="json")
@@ -95,7 +101,7 @@ def test_sku_out_of_stock_event_emitted(service_api_client, product_factory, sku
     assert any(call.args[1].get("event") == "SKU_OUT_OF_STOCK" for call in mock_post.call_args_list)
 
 
-def test_unreserve_restores_quantities_from_stored_record(service_api_client, product_factory, sku_factory):
+def test_unreserve_restores_quantities(service_api_client, product_factory, sku_factory):
     product = product_factory(status="MODERATED")
     sku = sku_factory(product, active_quantity=8, reserved_quantity=0)
     order_id = uuid.uuid4()
@@ -107,11 +113,17 @@ def test_unreserve_restores_quantities_from_stored_record(service_api_client, pr
 
     resp = service_api_client.post(
         UNRESERVE_URL,
-        {"order_id": str(order_id), "items": [{"sku_id": str(sku.id)}]},
+        {
+            "order_id": str(order_id),
+            "items": [{"sku_id": str(sku.id), "quantity": 3}],
+        },
         format="json",
     )
 
     assert resp.status_code == 200
+    assert resp.data["order_id"] == str(order_id)
+    assert resp.data["status"] == "UNRESERVED"
+    assert "processed_at" in resp.data
     sku.refresh_from_db()
     assert sku.active_quantity == 8
     assert sku.reserved_quantity == 0
@@ -131,7 +143,10 @@ def test_unreserve_foreign_order_returns_403(service_api_client, product_factory
 
     resp = service_api_client.post(
         UNRESERVE_URL,
-        {"order_id": str(order_b), "items": [{"sku_id": str(sku.id)}]},
+        {
+            "order_id": str(order_b),
+            "items": [{"sku_id": str(sku.id), "quantity": 2}],
+        },
         format="json",
     )
 
