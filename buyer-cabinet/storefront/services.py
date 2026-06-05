@@ -211,6 +211,21 @@ def b2b_get_products(params: list[tuple[str, str]]) -> dict:
     return upstream_response.json()
 
 
+def b2b_post(path: str, json_data: dict | None, params: list[tuple[str, str]]):
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", path.lstrip("/"))
+    try:
+        response = requests.post(
+            url,
+            params=params,
+            json=json_data,
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
+
+
 def int_value(value, default=0) -> int:
     try:
         return int(value)

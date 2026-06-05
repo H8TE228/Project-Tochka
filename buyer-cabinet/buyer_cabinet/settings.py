@@ -18,6 +18,8 @@ INSTALLED_APPS = [
     "storefront.apps.StorefrontConfig",
 ]
 
+AUTH_USER_MODEL = "storefront.User"
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",

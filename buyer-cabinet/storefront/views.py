@@ -1,9 +1,15 @@
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
+from rest_framework.permissions import IsAuthenticated
 
 from django.forms.fields import BooleanField
 from django.core.exceptions import ValidationError as DjangoValidationError
+
+from buyer_cabinet.authentication import JWTAuthentication
+
+from .serializers import FavoritesSerializer
+from .models import Favorite
 
 from .services import (
     MAX_LIMIT,
@@ -14,6 +20,7 @@ from .services import (
     b2b_get,
     b2b_get_product,
     b2b_get_products,
+    b2b_post,
     catalog_response,
     normalize_pagination,
     product_card_response,
@@ -345,3 +352,74 @@ class CategoryBreadcrumbsView(APIView):
         path = get_category_path(categories=upstream_response.json(), category_id=category_id)
 
         return Response(path, status=status.HTTP_200_OK)
+
+
+class FavoriteProductView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, product_id):
+        b2b_get_product(product_id=product_id) # проверка существования товара
+        favorite, created = Favorite.objects.get_or_create(
+            user_id = request.user.id,
+            product_id = product_id
+        )
+        serializer = FavoritesSerializer(favorite)
+        if created:
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+    
+    # во flow используется post, а в openapi используется put
+    # лишний запрос будет убран когда и во flow и в swagger будет одинаковый запрос 
+    def put(self, request, product_id):
+        return self.post(request=request, product_id=product_id)
+
+    def delete(self, request, product_id):
+        Favorite.objects.filter(user_id=request.user.id, product_id=product_id).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FavoriteProductListView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        limit = normalize_pagination(
+            request.query_params.get("limit"),
+            default=DEFAULT_LIMIT,
+            minimum=1,
+            maximum=MAX_LIMIT,
+        )
+        offset = normalize_pagination(request.query_params.get("offset"), default=0, minimum=0)
+        favorites = Favorite.objects.filter(user_id=request.user.id).order_by("-added_at")[offset:offset+limit]
+        product_ids = list(favorites.values_list("product_id", flat=True))
+        if not product_ids:
+            return Response({
+                "items": [],
+                "total_count": 0,
+                "limit": limit,
+                "offset": offset,
+            })
+        json_data = {"product_ids": product_ids}
+
+        try:
+            upstream_response = b2b_post(
+                "/api/v1/public/products",
+                params=[],
+                json_data=json_data,
+            )
+        except UpstreamUnavailable:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        if upstream_response.status_code >= 500:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "Catalog temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        if upstream_response.status_code >= 400:
+            return Response(upstream_response.json(), status=upstream_response.status_code)
+
+        return Response(catalog_response(upstream_response.json(), limit=limit, offset=offset))
