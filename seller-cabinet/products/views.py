@@ -380,7 +380,7 @@ class SKUCreateView(APIView):
 
 
 class SKUDetailView(APIView):
-    """PUT /api/v1/skus/{id} — US-B2B-03."""
+    """PUT/DELETE /api/v1/skus/{id} — US-B2B-03; soft delete SKU."""
     permission_classes = [IsSeller]
 
     def put(self, request, sku_id):
@@ -413,28 +413,24 @@ class SKUDetailView(APIView):
 
         return Response(SKUReadSerializer(sku).data)
 
-
-class SKUDeleteView(APIView):
-    """
-    DELETE /api/v1/products/{product_id}/skus/{sku_id} — soft delete SKU.
-    Error format must be canonical: {"code": "...", "message": "..."}.
-    """
-    permission_classes = [IsSeller]
-
-    def delete(self, request, product_id, sku_id):
+    def delete(self, request, sku_id):
         seller = get_or_create_seller(request.user)
         sku = (
-            SKU.objects.filter(pk=sku_id, deleted=False, product_id=product_id)
+            SKU.objects.filter(pk=sku_id, deleted=False, product__deleted=False)
             .select_related("product")
             .first()
         )
-
-        # Не раскрываем существование чужих SKU/товаров (IDOR) — 404.
-        if sku is None or sku.product.seller_id != seller.id:
+        if sku is None:
             return Response(
                 {"code": "NOT_FOUND", "message": "SKU not found"},
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        if sku.product.seller_id != seller.id:
+            raise NotOwner(detail={
+                "code": "NOT_OWNER",
+                "message": "SKU does not belong to the authenticated seller",
+            })
 
         if sku.product.status == Product.Status.HARD_BLOCKED:
             return Response(
@@ -445,8 +441,8 @@ class SKUDeleteView(APIView):
         if sku.reserved_quantity != 0:
             return Response(
                 {
-                    "code": "INVALID_REQUEST",
-                    "message": f"Cannot delete SKU with active reserves (reserved_quantity={sku.reserved_quantity})",
+                    "code": "CONFLICT",
+                    "message": "Cannot delete SKU with active reserves",
                 },
                 status=status.HTTP_409_CONFLICT,
             )
@@ -468,7 +464,7 @@ class SKUDeleteView(APIView):
             if had_active and prior_status == Product.Status.MODERATED:
                 publish_sku_out_of_stock_to_b2c(sku)
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class InvoiceCreateView(APIView):
     permission_classes = [IsSeller]
