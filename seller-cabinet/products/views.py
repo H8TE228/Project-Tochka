@@ -92,23 +92,27 @@ def _parse_list_limit_offset(request) -> tuple[int, int]:
     return limit, offset
 
 
+def _parse_include_deleted(request) -> bool | None:
+    raw = request.query_params.get("include_deleted")
+    if raw is None:
+        return False
+    normalized = raw.strip().lower()
+    if normalized in ("true", "1"):
+        return True
+    if normalized in ("false", "0"):
+        return False
+    return None
+
+
 def _apply_seller_list_status_filter(qs, status_raw: str):
-    """Фильтр ?status=ACTIVE|BLOCKED|DELETED."""
+    """Фильтр ?status= по ProductStatus enum."""
     s = (status_raw or "").strip().upper()
     if not s:
         return qs
-    if s == "DELETED":
-        return qs.filter(deleted=True)
-    if s == "BLOCKED":
-        return qs.filter(
-            deleted=False,
-            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
-        )
-    if s == "ACTIVE":
-        return qs.filter(deleted=False).exclude(
-            status__in=(Product.Status.BLOCKED, Product.Status.HARD_BLOCKED),
-        )
-    return None  # invalid
+    valid_statuses = {choice.value for choice in Product.Status}
+    if s not in valid_statuses:
+        return None
+    return qs.filter(status=s)
 
 
 def _filter_products_by_title_search(qs, search: str):
@@ -121,19 +125,29 @@ def _filter_products_by_title_search(qs, search: str):
 
 
 def _seller_product_list_response(request, seller: Seller) -> Response:
-    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
-    qs = (
-        Product.objects.filter(seller=seller)
-        .annotate(
-            skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
-            total_active_quantity=Coalesce(
-                Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
-                Value(0),
-                output_field=IntegerField(),
-            ),
+    """GET /api/v1/products — список товаров продавца (openapi ProductPaginatedResponse)."""
+    include_deleted = _parse_include_deleted(request)
+    if include_deleted is None:
+        return Response(
+            {
+                "code": "INVALID_REQUEST",
+                "message": "include_deleted must be true or false",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
-        .order_by("-created_at")
-    )
+
+    qs = Product.objects.filter(seller=seller)
+    if not include_deleted:
+        qs = qs.filter(deleted=False)
+
+    qs = qs.annotate(
+        skus_count=Count("skus", filter=Q(skus__deleted=False), distinct=True),
+        total_active_quantity=Coalesce(
+            Sum("skus__active_quantity", filter=Q(skus__deleted=False)),
+            Value(0),
+            output_field=IntegerField(),
+        ),
+    ).order_by("-created_at")
 
     search = (request.query_params.get("search") or "").strip()
     if search:
@@ -142,24 +156,25 @@ def _seller_product_list_response(request, seller: Seller) -> Response:
     status_raw = request.query_params.get("status", "")
     filtered = _apply_seller_list_status_filter(qs, status_raw)
     if filtered is None and status_raw.strip():
+        valid_statuses = ", ".join(choice.value for choice in Product.Status)
         return Response(
             {
                 "code": "INVALID_REQUEST",
-                "message": "status must be one of: ACTIVE, BLOCKED, DELETED",
+                "message": f"status must be one of: {valid_statuses}",
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
     if filtered is not None:
         qs = filtered
 
-    total = qs.count()
+    total_count = qs.count()
     limit, offset = _parse_list_limit_offset(request)
     page = qs[offset : offset + limit]
 
     return Response(
         {
             "items": ProductSellerListSerializer(page, many=True).data,
-            "total": total,
+            "total_count": total_count,
             "limit": limit,
             "offset": offset,
         }
@@ -168,31 +183,22 @@ def _seller_product_list_response(request, seller: Seller) -> Response:
 
 # ---------- Products ----------
 
-class ProductListView(APIView):
-    """GET /api/v1/products/list — список товаров продавца (openapi PaginatedProductList)."""
-
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsSeller]
-
-    def get(self, request):
-        seller = resolve_seller_for_jwt(request.user)
-        return _seller_product_list_response(request, seller)
-
-
 class ProductCreateView(APIView):
-    """POST /api/v1/products — US-B2B-01 (канон-flow B2B-1)."""
+    """POST /api/v1/products — US-B2B-01; GET — seller list (JWT) или B2C каталог (X-Service-Key)."""
 
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsSeller]
 
     def get_authenticators(self):
         if self.request.method == "GET":
-            return [RequireServiceKeyAuthentication()]
+            return [JWTAuthentication(), ServiceKeyAuthentication()]
         return super().get_authenticators()
 
     def get_permissions(self):
         if self.request.method == "GET":
-            return [IsServiceAuthenticated()]
+            if self.request.headers.get("X-Service-Key"):
+                return [IsServiceAuthenticated()]
+            return [IsSeller()]
         return super().get_permissions()
 
     def post(self, request):
@@ -237,6 +243,9 @@ class ProductCreateView(APIView):
                     if any(str(vs.id) == sku["id"] for vs in product.visible_skus)
                 ]
             return Response(data)
+
+        seller = resolve_seller_for_jwt(request.user)
+        return _seller_product_list_response(request, seller)
 
 
 class ProductDetailView(APIView):

@@ -78,10 +78,14 @@ def test_deleted_product_visible_in_list_with_deleted_flag(api_client, product_f
     product = product_factory(status=Product.Status.MODERATED)
     with patch("products.services._post_event"):
         api_client.delete(f"/api/v1/products/{product.id}")
-    resp = api_client.get("/api/v1/products/list")
+    hidden = api_client.get("/api/v1/products")
+    assert hidden.status_code == 200
+    assert not any(p["id"] == str(product.id) for p in hidden.data["items"])
+
+    resp = api_client.get("/api/v1/products", {"include_deleted": "true"})
     assert resp.status_code == 200
     items = resp.data["items"]
     row = next((p for p in items if p["id"] == str(product.id)), None)
     assert row is not None
     assert row["deleted"] is True
-    assert row["status"] == "DELETED"
+    assert row["status"] == "MODERATED"

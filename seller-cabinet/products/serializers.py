@@ -235,6 +235,19 @@ class SKUUpdateSerializer(SKUBaseWriteSerializer):
         return attrs
 
 
+class ProductSellerListSerializer(serializers.ModelSerializer):
+    """openapi: ProductListItem — seller product list."""
+    skus_count = serializers.IntegerField(read_only=True)
+    total_active_quantity = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Product
+        fields = (
+            "id", "title", "description", "status", "deleted",
+            "created_at", "updated_at", "skus_count", "total_active_quantity",
+        )
+
+
 class ProductReadSerializer(serializers.ModelSerializer):
     """openapi: ProductResponse — seller view."""
     seller_id = serializers.UUIDField(source="seller.auth_user_id", read_only=True)
