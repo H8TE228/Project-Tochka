@@ -14,7 +14,7 @@ urlpatterns = [
     path("inventory/reserve", views.ReserveView.as_view()),
     path("inventory/unreserve", views.UnreserveView.as_view()),
     path("inventory/fulfill", views.FulfillView.as_view()),
-    path("events/moderation", views.ModerationEventApplyView.as_view()),
+    path("moderation/events", views.ModerationEventApplyView.as_view()),
     
     path("categories", views.CategoryListCreateView.as_view()),
     path("categories/<uuid:category_id>", views.CategoryDetailView.as_view()),

@@ -325,15 +325,15 @@ class ProductIdsBatchSerializer(serializers.Serializer):
     )
 
 
-def product_public_paginated_response(items, *, total: int, page: int, size: int) -> dict:
+def product_public_paginated_response(
+    items, *, total_count: int, offset: int, limit: int
+) -> dict:
     """openapi: ProductPublicPaginatedResponse."""
-    pages = (total + size - 1) // size if size else 0
     return {
         "items": ProductPublicResponse(items, many=True).data,
-        "total": total,
-        "page": page,
-        "size": size,
-        "pages": pages,
+        "total_count": total_count,
+        "offset": offset,
+        "limit": limit,
     }
 
 
@@ -345,11 +345,13 @@ class ReserveItemSerializer(serializers.Serializer):
 class ReserveRequestSerializer(serializers.Serializer):
     """openapi: ReserveRequest."""
     order_id = serializers.UUIDField()
+    idempotency_key = serializers.UUIDField()
     items = ReserveItemSerializer(many=True, min_length=1)
 
 
 class UnreserveItemSerializer(serializers.Serializer):
     sku_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
 
 
 class UnreserveRequestSerializer(serializers.Serializer):
@@ -364,14 +366,19 @@ class InventoryOrderRequestSerializer(serializers.Serializer):
 
 
 class ModerationEventSerializer(serializers.Serializer):
-    """openapi: ModerationEvent — product_id, status, occurred_at (без event_type)."""
+    """openapi: ModerationEvent."""
     product_id = serializers.UUIDField()
-    status = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
+    event_type = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
     hard_block = serializers.BooleanField()
     occurred_at = serializers.DateTimeField()
     field_reports = serializers.JSONField(required=False, allow_null=True)
-    blocking_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    blocking_reason_id = serializers.UUIDField(required=False, allow_null=True)
     idempotency_key = serializers.UUIDField()
+
+    def validate_blocking_reason_id(self, value):
+        if value is not None and not BlockingReason.objects.filter(id=value).exists():
+            raise serializers.ValidationError("Blocking reason not found")
+        return value
 
 
 class ProductWriteSerializer(serializers.Serializer):

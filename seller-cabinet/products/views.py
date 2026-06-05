@@ -1,8 +1,9 @@
 import uuid
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
-from django.db.models import Count, IntegerField, Prefetch, Q, Sum, Value
+from django.db.models import Count, IntegerField, Min, Prefetch, Q, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import Http404
 from django.shortcuts import get_object_or_404
@@ -24,6 +25,7 @@ from .models import (
     Seller,
     Invoice,
     Category,
+    BlockingReason,
     InventoryReservation,
     ProcessedRequest,
     ProcessedModerationEvent,
@@ -53,7 +55,6 @@ from .services import (
     publish_product_deleted_to_b2c,
     publish_sku_out_of_stock_to_b2c,
     publish_product_blocked_to_b2c,
-    resolve_blocking_reason,
 )
 
 
@@ -154,12 +155,27 @@ def _parse_catalog_page_size(request) -> tuple[int, int]:
     return page, size
 
 
-def _public_catalog_queryset():
+_CATALOG_SORT_FIELDS = {
+    "created_at": "created_at",
+    "-created_at": "-created_at",
+    "price": "min_price",
+    "-price": "-min_price",
+    "title": "title",
+    "-title": "-title",
+}
+
+
+def _parse_catalog_sort(request) -> str:
+    sort = (request.query_params.get("sort") or "").strip()
+    return _CATALOG_SORT_FIELDS.get(sort, "-created_at")
+
+
+def _public_catalog_queryset(request):
     """Видимые в B2C товары; seller/images/characteristics/skus — одним запросом."""
     visible_skus = SKU.objects.filter(
         active_quantity__gt=0,
     ).prefetch_related("images", "characteristics")
-    return (
+    qs = (
         Product.objects.filter(
             deleted=False,
             status=Product.Status.MODERATED,
@@ -173,17 +189,30 @@ def _public_catalog_queryset():
             Prefetch("skus", queryset=visible_skus),
         )
         .distinct()
-        .order_by("-created_at")
     )
+
+    category_id = request.query_params.get("category_id")
+    if category_id:
+        qs = qs.filter(category_id=category_id)
+
+    sort_field = _parse_catalog_sort(request)
+    if "min_price" in sort_field:
+        qs = qs.annotate(
+            min_price=Min("skus__price", filter=Q(skus__active_quantity__gt=0))
+        )
+
+    return qs.order_by(sort_field)
 
 
 def _public_catalog_response(request, queryset) -> Response:
     page, size = _parse_catalog_page_size(request)
-    total = queryset.count()
+    total_count = queryset.count()
     offset = (page - 1) * size
     items = list(queryset[offset : offset + size])
     return Response(
-        product_public_paginated_response(items, total=total, page=page, size=size)
+        product_public_paginated_response(
+            items, total_count=total_count, offset=offset, limit=size
+        )
     )
 
 
@@ -256,12 +285,12 @@ class PublicProductCatalogView(APIView):
     permission_classes = [IsServiceAuthenticated]
 
     def get(self, request):
-        return _public_catalog_response(request, _public_catalog_queryset())
+        return _public_catalog_response(request, _public_catalog_queryset(request))
 
     def post(self, request):
         serializer = ProductIdsBatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        queryset = _public_catalog_queryset()
+        queryset = _public_catalog_queryset(request)
         product_ids = serializer.validated_data.get("product_ids") or []
         if product_ids:
             queryset = queryset.filter(id__in=product_ids)
@@ -605,6 +634,9 @@ class CategoryDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+RESERVE_IDEMPOTENCY_TTL = timedelta(hours=1)
+
+
 def _reserve_response(order_id, reserved_at) -> dict:
     """openapi: ReserveResponse."""
     return {
@@ -614,8 +646,17 @@ def _reserve_response(order_id, reserved_at) -> dict:
     }
 
 
+def _inventory_order_response(order_id, processed_at, *, status_value: str) -> dict:
+    """openapi: InventoryOrderResponse."""
+    return {
+        "order_id": str(order_id),
+        "status": status_value,
+        "processed_at": processed_at.isoformat(),
+    }
+
+
 class ReserveView(APIView):
-    """POST /api/v1/inventory/reserve — резерв по order_id (идемпотентность на пару order_id+sku)."""
+    """POST /api/v1/inventory/reserve — резерв; идемпотентность по idempotency_key (TTL 1 ч)."""
 
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
@@ -624,7 +665,20 @@ class ReserveView(APIView):
         serializer = ReserveRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         order_id = serializer.validated_data["order_id"]
+        idempotency_key = serializer.validated_data["idempotency_key"]
         items = serializer.validated_data["items"]
+
+        existing = ProcessedRequest.objects.filter(
+            action=ProcessedRequest.Action.RESERVE,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing:
+            if existing.created_at >= timezone.now() - RESERVE_IDEMPOTENCY_TTL:
+                return Response(
+                    _reserve_response(order_id, existing.created_at),
+                    status=status.HTTP_200_OK,
+                )
+            existing.delete()
 
         with transaction.atomic():
             sku_ids = [item["sku_id"] for item in items]
@@ -640,17 +694,7 @@ class ReserveView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            existing = {
-                r.sku_id: r
-                for r in InventoryReservation.objects.select_for_update().filter(
-                    order_id=order_id,
-                    sku_id__in=sku_ids,
-                )
-            }
-
             for item in items:
-                if item["sku_id"] in existing:
-                    continue
                 sku = skus[item["sku_id"]]
                 if sku.active_quantity < item["quantity"]:
                     return Response(
@@ -661,44 +705,32 @@ class ReserveView(APIView):
             out_of_stock_skus = []
             reserved_at = timezone.now()
             for item in items:
-                sku_id = item["sku_id"]
-                if sku_id in existing:
-                    continue
-                sku = skus[sku_id]
+                sku = skus[item["sku_id"]]
                 quantity = item["quantity"]
                 sku.active_quantity -= quantity
                 sku.reserved_quantity += quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
                 InventoryReservation.objects.create(
                     order_id=order_id,
-                    sku_id=sku_id,
+                    sku_id=item["sku_id"],
                     quantity=quantity,
                     reserved_at=reserved_at,
                 )
                 if sku.active_quantity == 0:
                     out_of_stock_skus.append(sku)
 
-            first_reserved = (
-                InventoryReservation.objects.filter(order_id=order_id)
-                .order_by("reserved_at")
-                .values_list("reserved_at", flat=True)
-                .first()
+            ProcessedRequest.objects.create(
+                action=ProcessedRequest.Action.RESERVE,
+                idempotency_key=idempotency_key,
             )
+
             for sku in out_of_stock_skus:
                 publish_sku_out_of_stock_to_b2c(sku)
 
         return Response(
-            _reserve_response(order_id, first_reserved or reserved_at),
+            _reserve_response(order_id, reserved_at),
             status=status.HTTP_200_OK,
         )
-
-
-def _inventory_order_response(order_id, processed_at) -> dict:
-    return {
-        "order_id": str(order_id),
-        "status": "FULFILLED",
-        "processed_at": processed_at.isoformat(),
-    }
 
 
 class FulfillView(APIView):
@@ -720,7 +752,9 @@ class FulfillView(APIView):
         ).first()
         if existing:
             return Response(
-                _inventory_order_response(order_id, existing.created_at),
+                _inventory_order_response(
+                    order_id, existing.created_at, status_value="FULFILLED"
+                ),
                 status=status.HTTP_200_OK,
             )
 
@@ -760,7 +794,9 @@ class FulfillView(APIView):
             )
 
         return Response(
-            _inventory_order_response(order_id, processed.created_at),
+            _inventory_order_response(
+                order_id, processed.created_at, status_value="FULFILLED"
+            ),
             status=status.HTTP_200_OK,
         )
 
@@ -806,23 +842,56 @@ class UnreserveView(APIView):
                         status=status.HTTP_403_FORBIDDEN,
                     )
 
+            reservations = {
+                r.sku_id: r
+                for r in InventoryReservation.objects.select_for_update().filter(
+                    order_id=order_id,
+                    sku_id__in=sku_ids,
+                )
+            }
+
             for item in items:
                 sku_id = item["sku_id"]
-                reservation = (
-                    InventoryReservation.objects.select_for_update()
-                    .filter(order_id=order_id, sku_id=sku_id)
-                    .first()
-                )
+                quantity = item["quantity"]
+                reservation = reservations.get(sku_id)
                 if reservation is None:
-                    continue
+                    return Response(
+                        {
+                            "code": "INVALID_REQUEST",
+                            "message": "No reservation found for SKU in this order",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if quantity > reservation.quantity:
+                    return Response(
+                        {
+                            "code": "INVALID_REQUEST",
+                            "message": "Cannot unreserve more than reserved quantity",
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+            processed_at = timezone.now()
+            for item in items:
+                sku_id = item["sku_id"]
+                quantity = item["quantity"]
+                reservation = reservations[sku_id]
                 sku = skus[sku_id]
-                quantity = reservation.quantity
                 sku.active_quantity += quantity
                 sku.reserved_quantity -= quantity
                 sku.save(update_fields=["active_quantity", "reserved_quantity", "updated_at"])
-                reservation.delete()
+                if quantity == reservation.quantity:
+                    reservation.delete()
+                else:
+                    reservation.quantity -= quantity
+                    reservation.save(update_fields=["quantity"])
 
-        return Response({"ok": True}, status=status.HTTP_200_OK)
+        return Response(
+            _inventory_order_response(
+                order_id, processed_at, status_value="UNRESERVED"
+            ),
+            status=status.HTTP_200_OK,
+        )
 
 
 class ModerationEventApplyView(APIView):
@@ -852,7 +921,7 @@ class ModerationEventApplyView(APIView):
                 Product.objects.select_for_update(),
                 pk=data["product_id"],
             )
-            if data["status"] == "MODERATED":
+            if data["event_type"] == "MODERATED":
                 product.status = Product.Status.MODERATED
                 product.blocking_reason = None
                 product.moderator_comment = ""
@@ -861,8 +930,13 @@ class ModerationEventApplyView(APIView):
                 product.status = (
                     Product.Status.HARD_BLOCKED if data["hard_block"] else Product.Status.BLOCKED
                 )
-                product.blocking_reason = resolve_blocking_reason(data.get("blocking_reason"))
-                product.moderator_comment = data.get("blocking_reason") or ""
+                blocking_reason_id = data.get("blocking_reason_id")
+                product.blocking_reason = (
+                    BlockingReason.objects.filter(pk=blocking_reason_id).first()
+                    if blocking_reason_id
+                    else None
+                )
+                product.moderator_comment = ""
                 product.field_reports = data.get("field_reports") or []
                 publish_product_blocked_to_b2c(product)
 
