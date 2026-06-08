@@ -82,10 +82,13 @@ def publish_sku_out_of_stock_to_b2c(sku: SKU) -> None:
 
 
 def publish_product_blocked_to_b2c(product: Product) -> None:
+    """Канон-flow B2B-5: PRODUCT_BLOCKED содержит sku_ids для удаления из корзин B2C."""
+    sku_ids = [str(sku.id) for sku in product.skus.all()]
     payload = {
         "idempotency_key": str(uuid.uuid4()),
         "event": "PRODUCT_BLOCKED",
         "product_id": str(product.id),
+        "sku_ids": sku_ids,
         "date": _iso_now(),
     }
     url = f"{settings.B2C_URL}/api/v1/events/product"
