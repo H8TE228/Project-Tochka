@@ -319,16 +319,18 @@ components:
                 format: uuid
     ModerationEvent:
       type: object
-      required: [product_id, status, hard_block, occurred_at, idempotency_key]
+      required: [product_id, event_type, hard_block, occurred_at, idempotency_key]
       properties:
         product_id:
           type: string
           format: uuid
-        status:
+        event_type:
           type: string
           enum: [MODERATED, BLOCKED]
+          description: "MODERATED - producto aprobado, BLOCKED - producto bloqueado"
         hard_block:
           type: boolean
+          description: "true - bloqueo permanente (HARD_BLOCKED), false - bloqueo temporal (BLOCKED)"
         occurred_at:
           type: string
           format: date-time
@@ -338,10 +340,13 @@ components:
             - type: array
               items:
                 type: object
+              description: "Поле с описанием причин блокировки"
             - type: "null"
-        blocking_reason:
+        blocking_reason_id:
           type: string
+          format: uuid
           nullable: true
+          description: "ID причины блокировки из справочника BlockingReason"
         idempotency_key:
           type: string
           format: uuid

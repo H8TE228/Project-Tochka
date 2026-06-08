@@ -895,6 +895,14 @@ class UnreserveView(APIView):
 
 
 class ModerationEventApplyView(APIView):
+    """
+    POST /api/v1/moderation/events — обработка решения по модерации товара.
+    Три сценария (канон-flow B2B-9):
+    - MODERATED → status=MODERATED, очистить blocking_reason и field_reports
+    - BLOCKED soft (hard_block=false) → status=BLOCKED, сохранить field_reports
+    - BLOCKED hard (hard_block=true) → status=HARD_BLOCKED (терминальный)
+    Идемпотентность по (service_id, idempotency_key) с SELECT FOR UPDATE.
+    """
     authentication_classes = [RequireServiceKeyAuthentication]
     permission_classes = [IsServiceAuthenticated]
 
@@ -911,24 +919,33 @@ class ModerationEventApplyView(APIView):
         data = serializer.validated_data
 
         with transaction.atomic():
+            # Проверка идемпотентности: уже обработано?
             if ProcessedModerationEvent.objects.filter(
                 service_id=service_id,
                 idempotency_key=data["idempotency_key"],
             ).exists():
                 return Response(status=status.HTTP_204_NO_CONTENT)
 
+            # SELECT FOR UPDATE — блокировка строки продукта
+            # Prefetch SKU для publish_product_blocked_to_b2c (избежать N+1)
             product = get_object_or_404(
-                Product.objects.select_for_update(),
+                Product.objects.prefetch_related("skus").select_for_update(),
                 pk=data["product_id"],
             )
+
+            # Три сценария обработки
             if data["event_type"] == "MODERATED":
+                # Сценарий 1: MODERATED → одобрение
                 product.status = Product.Status.MODERATED
                 product.blocking_reason = None
                 product.moderator_comment = ""
                 product.field_reports = []
             else:
+                # Сценарий 2 & 3: BLOCKED (soft или hard)
                 product.status = (
-                    Product.Status.HARD_BLOCKED if data["hard_block"] else Product.Status.BLOCKED
+                    Product.Status.HARD_BLOCKED
+                    if data["hard_block"]
+                    else Product.Status.BLOCKED
                 )
                 blocking_reason_id = data.get("blocking_reason_id")
                 product.blocking_reason = (
@@ -938,6 +955,7 @@ class ModerationEventApplyView(APIView):
                 )
                 product.moderator_comment = ""
                 product.field_reports = data.get("field_reports") or []
+                # Отправить каскадное событие PRODUCT_BLOCKED в B2C (с sku_ids)
                 publish_product_blocked_to_b2c(product)
 
             product.save(
@@ -949,6 +967,8 @@ class ModerationEventApplyView(APIView):
                     "updated_at",
                 ]
             )
+
+            # Записать обработку события для идемпотентности
             ProcessedModerationEvent.objects.create(
                 service_id=service_id,
                 idempotency_key=data["idempotency_key"],
