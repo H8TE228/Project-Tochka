@@ -927,8 +927,9 @@ class ModerationEventApplyView(APIView):
                 return Response(status=status.HTTP_204_NO_CONTENT)
 
             # SELECT FOR UPDATE — блокировка строки продукта
+            # Prefetch SKU для publish_product_blocked_to_b2c (избежать N+1)
             product = get_object_or_404(
-                Product.objects.select_for_update(),
+                Product.objects.prefetch_related("skus").select_for_update(),
                 pk=data["product_id"],
             )
 
