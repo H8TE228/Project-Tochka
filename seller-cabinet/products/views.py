@@ -956,7 +956,7 @@ class ModerationEventApplyView(APIView):
                 product.moderator_comment = ""
                 product.field_reports = data.get("field_reports") or []
                 # Отправить каскадное событие PRODUCT_BLOCKED в B2C (с sku_ids)
-                publish_product_blocked_to_b2c(product)
+                publish_product_blocked_to_b2c(product, hard_block=data["hard_block"])
 
             product.save(
                 update_fields=[

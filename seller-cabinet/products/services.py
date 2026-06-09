@@ -81,17 +81,24 @@ def publish_sku_out_of_stock_to_b2c(sku: SKU) -> None:
     transaction.on_commit(lambda: _post_event(url, payload, key))
 
 
-def publish_product_blocked_to_b2c(product: Product) -> None:
-    """Канон-flow B2B-5: PRODUCT_BLOCKED содержит sku_ids для удаления из корзин B2C."""
-    sku_ids = [str(sku.id) for sku in product.skus.all()]
+def publish_product_blocked_to_b2c(product: Product, hard_block: bool = False) -> None:
+    """
+    Канон-flow B2B-5: уведомить B2C о блокировке товара.
+
+    Контракт B2C (spec b2c/openapi.yaml — POST /api/v1/b2b/events):
+        body: {event_type, idempotency_key, occurred_at, payload: {product_id}}
+        - event_type = "PRODUCT_HARD_BLOCKED" при terminal-блокировке
+        - event_type = "PRODUCT_BLOCKED" при soft-блокировке
+    sku_ids не передаём — `payload.product_id` достаточен, B2C сам подтянет SKU.
+    """
+    event_type = "PRODUCT_HARD_BLOCKED" if hard_block else "PRODUCT_BLOCKED"
     payload = {
+        "event_type": event_type,
         "idempotency_key": str(uuid.uuid4()),
-        "event": "PRODUCT_BLOCKED",
-        "product_id": str(product.id),
-        "sku_ids": sku_ids,
-        "date": _iso_now(),
+        "occurred_at": _iso_now(),
+        "payload": {"product_id": str(product.id)},
     }
-    url = f"{settings.B2C_URL}/api/v1/events/product"
+    url = f"{settings.B2C_URL}/api/v1/b2b/events"
     key = settings.B2B_TO_B2C_KEY
     transaction.on_commit(lambda: _post_event(url, payload, key))
 

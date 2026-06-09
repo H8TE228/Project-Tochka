@@ -135,14 +135,18 @@ class TestModerationEventBlocked:
         assert product.status == Product.Status.HARD_BLOCKED
         assert product.blocking_reason_id == blocking_reason.id
 
-    def test_blocked_cascade_event_has_sku_ids(
-        self, service_api_client, product_factory, sku_factory, db
+    @pytest.mark.django_db(transaction=True)
+    def test_blocked_hard_cascade_uses_new_b2c_contract(
+        self, service_api_client, product_factory, sku_factory
     ):
-        """DoD: PRODUCT_BLOCKED вызывается с товаром, содержащим sku_ids."""
+        """DoD: каскад в B2C при HARD блокировке.
+
+        Контракт B2C: POST /api/v1/b2b/events с
+        {event_type: "PRODUCT_HARD_BLOCKED", idempotency_key, occurred_at, payload: {product_id}}.
+        """
         product = product_factory(status=Product.Status.ON_MODERATION)
-        sku1 = sku_factory(product=product)
-        sku2 = sku_factory(product=product)
-        sku3 = sku_factory(product=product)
+        sku_factory(product=product)
+        sku_factory(product=product)
 
         payload = _moderation_event_payload(
             product.id,
@@ -150,15 +154,54 @@ class TestModerationEventBlocked:
             hard_block=True,
         )
 
-        # Проверяем, что статус изменился
-        resp = service_api_client.post(
-            "/api/v1/moderation/events", payload, format="json"
-        )
-        assert resp.status_code == 204
+        with patch("products.services._post_event") as mock_post:
+            resp = service_api_client.post(
+                "/api/v1/moderation/events", payload, format="json"
+            )
 
-        product.refresh_from_db()
-        assert product.status == Product.Status.HARD_BLOCKED
-        assert product.skus.count() == 3
+        assert resp.status_code == 204
+        assert mock_post.call_count == 1
+        url, body, _service_key = mock_post.call_args.args
+
+        # 1) Правильный URL
+        assert url.endswith("/api/v1/b2b/events"), f"wrong B2C path: {url}"
+        # 2) Правильная структура события
+        assert body["event_type"] == "PRODUCT_HARD_BLOCKED"
+        assert "idempotency_key" in body
+        assert "occurred_at" in body
+        assert body["payload"] == {"product_id": str(product.id)}
+        # 3) Старых полей быть не должно
+        assert "event" not in body         # старое плоское поле
+        assert "sku_ids" not in body       # больше не нужен
+        assert "product_id" not in body    # должно быть только в payload, не в корне
+        assert "date" not in body          # переименовано в occurred_at
+
+    @pytest.mark.django_db(transaction=True)
+    def test_blocked_soft_cascade_uses_product_blocked_event_type(
+        self, service_api_client, product_factory
+    ):
+        """DoD: при soft-блокировке event_type = PRODUCT_BLOCKED (не PRODUCT_HARD_BLOCKED)."""
+        blocking_reason = BlockingReason.objects.create(title="Image quality")
+        product = product_factory(status=Product.Status.ON_MODERATION)
+
+        payload = _moderation_event_payload(
+            product.id,
+            event_type="BLOCKED",
+            hard_block=False,
+            blocking_reason_id=blocking_reason.id,
+        )
+
+        with patch("products.services._post_event") as mock_post:
+            resp = service_api_client.post(
+                "/api/v1/moderation/events", payload, format="json"
+            )
+
+        assert resp.status_code == 204
+        assert mock_post.call_count == 1
+        url, body, _ = mock_post.call_args.args
+        assert url.endswith("/api/v1/b2b/events")
+        assert body["event_type"] == "PRODUCT_BLOCKED"
+        assert body["payload"] == {"product_id": str(product.id)}
 
 
 class TestModerationEventIdempotency:

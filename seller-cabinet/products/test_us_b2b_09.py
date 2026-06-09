@@ -101,7 +101,11 @@ def test_blocked_hard_sets_terminal_status(service_api_client, product_factory, 
     product.refresh_from_db()
     assert product.status == Product.Status.HARD_BLOCKED
     assert product.blocking_reason_id == reason.id
-    assert any(call.args[1].get("event") == "PRODUCT_BLOCKED" for call in mock_post.call_args_list)
+    # hard_block=True → event_type=PRODUCT_HARD_BLOCKED (новый контракт B2C)
+    assert any(
+        call.args[1].get("event_type") == "PRODUCT_HARD_BLOCKED"
+        for call in mock_post.call_args_list
+    )
 
 
 def test_hard_blocked_product_rejects_seller_edits(api_client, product_factory, category):
