@@ -21,6 +21,8 @@ from .services import (
     b2b_get_product,
     b2b_get_products,
     b2b_post,
+    b2b_reserve,
+    b2b_unreserve,
     catalog_response,
     normalize_pagination,
     product_card_response,
@@ -28,18 +30,25 @@ from .services import (
     query_params_as_pairs,
     validate_search,
     validate_sort,
+    stock_quantity,
+    sku_price,
+    product_name,
 )
 import uuid
 from django.db import models
 from django.utils import timezone
 
+from django.db import transaction
 from .models import (
     Subscription, Cart, CartItem, Banner, BannerEvent,
+    Collection, Order, OrderItem,
 )
 from .serializers import (
     SubscriptionWriteSerializer, SubscriptionReadSerializer,
     CartItemWriteSerializer, CartItemQuantityUpdateSerializer,
     BannerSerializer, BannerEventWriteSerializer,
+    CollectionSerializer,
+    OrderSerializer, OrderListSerializer, CheckoutRequestSerializer,
 )
 
 class HealthCheckView(APIView):
@@ -771,3 +780,381 @@ class BannerEventsView(APIView):
             session_id=session_id,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ============================================================
+# US-CART-05: подборки товаров на главной
+# ============================================================
+class CollectionListView(APIView):
+    """GET /api/v1/main/collections — список активных подборок (публичный)."""
+
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request):
+        limit = normalize_pagination(
+            request.query_params.get("limit"), default=10, minimum=1, maximum=MAX_LIMIT
+        )
+        offset = normalize_pagination(
+            request.query_params.get("offset"), default=0, minimum=0
+        )
+        today = timezone.now().date()
+        qs = Collection.objects.filter(
+            is_active=True
+        ).filter(
+            models.Q(start_date__isnull=True) | models.Q(start_date__lte=today)
+        ).order_by("-priority", "-created_at")
+
+        total_count = qs.count()
+        collections = qs[offset: offset + limit]
+        return Response({
+            "items": CollectionSerializer(collections, many=True).data,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+        })
+
+
+class CollectionProductsView(APIView):
+    """GET /api/v1/collections/{collection_id}/products — товары подборки с batch-обогащением из B2B."""
+
+    authentication_classes = []
+    permission_classes = []
+
+    def get(self, request, collection_id):
+        try:
+            collection = Collection.objects.get(id=collection_id, is_active=True)
+        except Collection.DoesNotExist:
+            return Response(
+                {"code": "NOT_FOUND", "message": "Collection not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        product_ids = list(
+            collection.collection_products.order_by("ordering").values_list(
+                "product_id", flat=True
+            )
+        )
+
+        if not product_ids:
+            return Response({
+                "collection_id": str(collection.id),
+                "collection_title": collection.title,
+                "items": [],
+                "unavailable_ids": [],
+                "total_products": 0,
+            })
+
+        # Batch-обогащение из B2B; B2B возвращает только доступные товары
+        try:
+            upstream_response = b2b_post(
+                "/api/v1/public/products",
+                params=[],
+                json_data={"product_ids": [str(pid) for pid in product_ids]},
+            )
+        except UpstreamUnavailable:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "B2B temporarily unavailable"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if upstream_response.status_code >= 500:
+            return Response(
+                {"code": "UPSTREAM_UNAVAILABLE", "message": "B2B temporarily unavailable"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if upstream_response.status_code >= 400:
+            return Response(upstream_response.json(), status=upstream_response.status_code)
+
+        b2b_data = upstream_response.json()
+        b2b_items = b2b_data.get("items", []) if isinstance(b2b_data, dict) else []
+
+        # Товары, не вернувшиеся из B2B — недоступны (удалены/заблокированы)
+        available_ids = {str(p.get("id")) for p in b2b_items}
+        unavailable_ids = [str(pid) for pid in product_ids if str(pid) not in available_ids]
+
+        limit = normalize_pagination(
+            request.query_params.get("limit"), default=DEFAULT_LIMIT, minimum=1, maximum=MAX_LIMIT
+        )
+        offset = normalize_pagination(
+            request.query_params.get("offset"), default=0, minimum=0
+        )
+
+        return Response({
+            "collection_id": str(collection.id),
+            "collection_title": collection.title,
+            "items": b2b_items[offset: offset + limit],
+            "unavailable_ids": unavailable_ids,
+            "total_products": len(product_ids),
+        })
+
+
+# ============================================================
+# US-ORD-01: оформление заказа (checkout)
+# ============================================================
+
+def _build_sku_index(b2b_products: list[dict]) -> dict:
+    """
+    Строит индекс {sku_id_str: {"sku": {...}, "product": {...}}} из ответа B2B.
+    B2B возвращает список продуктов, каждый со списком skus.
+    """
+    index = {}
+    for product in b2b_products:
+        for sku in product.get("skus", []) or []:
+            sku_id = str(sku.get("id", ""))
+            if sku_id:
+                index[sku_id] = {"sku": sku, "product": product}
+    return index
+
+
+def _order_to_response(order: Order) -> dict:
+    """Сериализует заказ в API-ответ."""
+    return OrderSerializer(order).data
+
+
+class OrderListCreateView(APIView):
+    """
+    POST /api/v1/orders — checkout (создание заказа).
+    GET /api/v1/orders — список заказов пользователя.
+    """
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        limit = normalize_pagination(
+            request.query_params.get("limit"), default=DEFAULT_LIMIT, minimum=1, maximum=MAX_LIMIT
+        )
+        offset = normalize_pagination(request.query_params.get("offset"), default=0, minimum=0)
+        status_filter = request.query_params.get("status")
+
+        qs = Order.objects.filter(user_id=request.user.id).prefetch_related("items")
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        total_count = qs.count()
+        orders = list(qs[offset: offset + limit])
+        return Response({
+            "items": OrderListSerializer(orders, many=True).data,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+        })
+
+    def post(self, request):
+        ser = CheckoutRequestSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        idempotency_key = data["idempotency_key"]
+        items = data["items"]
+        delivery_address = data.get("delivery_address", "")
+
+        # 0. Idempotency check — вернуть существующий заказ без повторного резервирования
+        try:
+            existing = Order.objects.prefetch_related("items").get(
+                user_id=request.user.id, idempotency_key=idempotency_key
+            )
+            return Response(OrderSerializer(existing).data, status=status.HTTP_200_OK)
+        except Order.DoesNotExist:
+            pass
+
+        # 1. Получить актуальные данные из B2B для проверки наличия
+        product_ids_for_request = []
+        # B2B поддерживает GET /api/v1/public/products?ids=... — используем b2b_get
+        # Собираем уникальные sku_ids; на самом деле нам нужны product_ids, но
+        # для MVP вызываем b2b_get_products чтобы получить все skus и найти нужные.
+        try:
+            b2b_resp = b2b_get_products([("limit", "1000"), ("offset", "0")])
+        except Exception:
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "Сервис товаров временно недоступен, попробуйте позже"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        b2b_items_list = b2b_resp.get("items", []) if isinstance(b2b_resp, dict) else []
+        sku_index = _build_sku_index(b2b_items_list)
+
+        # 2. Валидация наличия каждого SKU
+        failed_items = []
+        for item in items:
+            sku_id_str = str(item["sku_id"])
+            bundle = sku_index.get(sku_id_str)
+            if bundle is None:
+                failed_items.append({"sku_id": sku_id_str, "reason": "SKU_NOT_FOUND"})
+                continue
+            product = bundle["product"]
+            sku = bundle["sku"]
+            prod_status = product.get("status", "")
+            if prod_status == "BLOCKED":
+                failed_items.append({"sku_id": sku_id_str, "reason": "PRODUCT_BLOCKED"})
+                continue
+            if product.get("deleted") or prod_status == "DELETED":
+                failed_items.append({"sku_id": sku_id_str, "reason": "PRODUCT_DELETED"})
+                continue
+            available_qty = stock_quantity(sku)
+            requested_qty = item["quantity"]
+            if available_qty <= 0:
+                failed_items.append({
+                    "sku_id": sku_id_str,
+                    "reason": "OUT_OF_STOCK",
+                    "requested": requested_qty,
+                    "available": 0,
+                })
+            elif available_qty < requested_qty:
+                failed_items.append({
+                    "sku_id": sku_id_str,
+                    "reason": "INSUFFICIENT_STOCK",
+                    "requested": requested_qty,
+                    "available": available_qty,
+                })
+
+        if failed_items:
+            return Response(
+                {
+                    "code": "RESERVE_FAILED",
+                    "message": "Не удалось зарезервировать товары",
+                    "failed_items": failed_items,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # 3. Резервирование (all-or-nothing) в B2B
+        reserve_items = [
+            {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
+            for item in items
+        ]
+        try:
+            reserve_resp = b2b_reserve(
+                idempotency_key=str(idempotency_key),
+                items=reserve_items,
+            )
+        except UpstreamUnavailable:
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "Сервис товаров временно недоступен, попробуйте позже"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if reserve_resp.status_code >= 500:
+            return Response(
+                {"code": "B2B_UNAVAILABLE", "message": "Сервис товаров временно недоступен, попробуйте позже"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        if reserve_resp.status_code == 409:
+            reserve_data = reserve_resp.json()
+            return Response(
+                {
+                    "code": "RESERVE_FAILED",
+                    "message": "Не удалось зарезервировать товары",
+                    "failed_items": reserve_data.get("failed_items", []),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if reserve_resp.status_code >= 400:
+            return Response(
+                {"code": "RESERVE_FAILED", "message": "Резервирование отклонено B2B"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # 4. Создать Order и OrderItems атомарно с фиксацией цен
+        with transaction.atomic():
+            total_amount = sum(
+                sku_price(sku_index[str(item["sku_id"])]["sku"]) * item["quantity"]
+                for item in items
+            )
+            order = Order.objects.create(
+                user_id=request.user.id,
+                status=Order.STATUS_PAID,
+                total_amount=total_amount,
+                delivery_address=delivery_address,
+                idempotency_key=idempotency_key,
+            )
+            for item in items:
+                sku_id_str = str(item["sku_id"])
+                bundle = sku_index[sku_id_str]
+                sku = bundle["sku"]
+                product = bundle["product"]
+                unit_price = sku_price(sku)
+                qty = item["quantity"]
+                OrderItem.objects.create(
+                    order=order,
+                    sku_id=sku_id_str,
+                    product_id=str(product.get("id", "")),
+                    product_title=product_name(product),
+                    sku_name=sku.get("name", ""),
+                    quantity=qty,
+                    unit_price=unit_price,
+                    line_total=unit_price * qty,
+                )
+
+        order.refresh_from_db()
+        return Response(
+            OrderSerializer(Order.objects.prefetch_related("items").get(pk=order.pk)).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OrderDetailView(APIView):
+    """GET /api/v1/orders/{order_id} — детали заказа."""
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, order_id):
+        try:
+            order = Order.objects.prefetch_related("items").get(
+                id=order_id, user_id=request.user.id
+            )
+        except Order.DoesNotExist:
+            return Response(
+                {"code": "ORDER_NOT_FOUND", "message": "Заказ не найден"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(OrderSerializer(order).data)
+
+
+class OrderCancelView(APIView):
+    """POST /api/v1/orders/{order_id}/cancel — отмена заказа."""
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, order_id):
+        try:
+            order = Order.objects.prefetch_related("items").get(
+                id=order_id, user_id=request.user.id
+            )
+        except Order.DoesNotExist:
+            return Response(
+                {"code": "ORDER_NOT_FOUND", "message": "Заказ не найден"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if order.status not in Order.CANCELLABLE_STATUSES:
+            return Response(
+                {
+                    "code": "CANCEL_NOT_ALLOWED",
+                    "message": f"Отмена невозможна: заказ в статусе {order.status}",
+                    "current_status": order.status,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # Вызов unreserve в B2B
+        unreserve_items = [
+            {"sku_id": str(item.sku_id), "quantity": item.quantity}
+            for item in order.items.all()
+        ]
+        try:
+            unreserve_resp = b2b_unreserve(
+                order_id=str(order.id),
+                items=unreserve_items,
+            )
+            if unreserve_resp.status_code < 500:
+                order.status = Order.STATUS_CANCELLED
+            else:
+                order.status = Order.STATUS_CANCEL_PENDING
+        except UpstreamUnavailable:
+            order.status = Order.STATUS_CANCEL_PENDING
+
+        order.save(update_fields=["status", "updated_at"])
+        return Response(OrderSerializer(order).data)
