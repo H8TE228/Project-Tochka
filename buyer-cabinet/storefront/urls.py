@@ -24,6 +24,13 @@ from .views import (
     # US-CART-04
     HomeBannersView,
     BannerEventsView,
+    # US-CART-05
+    CollectionListView,
+    CollectionProductsView,
+    # US-ORD-01
+    OrderListCreateView,
+    OrderDetailView,
+    OrderCancelView,
 )
 
 
@@ -58,4 +65,13 @@ urlpatterns = [
     # US-CART-04: баннеры
     path("home/banners", HomeBannersView.as_view(), name="home-banners"),
     path("banner-events", BannerEventsView.as_view(), name="banner-events"),
+
+    # US-CART-05: подборки товаров
+    path("main/collections", CollectionListView.as_view(), name="main-collections"),
+    path("collections/<uuid:collection_id>/products", CollectionProductsView.as_view(), name="collection-products"),
+
+    # US-ORD-01: заказы
+    path("orders", OrderListCreateView.as_view(), name="orders"),
+    path("orders/<uuid:order_id>", OrderDetailView.as_view(), name="order-detail"),
+    path("orders/<uuid:order_id>/cancel", OrderCancelView.as_view(), name="order-cancel"),
 ]

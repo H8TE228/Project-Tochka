@@ -71,3 +71,86 @@ class BannerEventWriteSerializer(serializers.Serializer):
     event_type = serializers.ChoiceField(
         choices=[BannerEvent.EVENT_VIEW, BannerEvent.EVENT_CLICK]
     )
+
+
+# ============================================================
+# US-CART-05: подборки товаров
+# ============================================================
+from .models import Collection
+
+
+class CollectionSerializer(serializers.ModelSerializer):
+    """Метаданные подборки — без товаров."""
+
+    class Meta:
+        model = Collection
+        fields = (
+            "id", "title", "description", "cover_image_url",
+            "target_url", "priority", "is_active", "start_date", "created_at",
+        )
+
+
+# ============================================================
+# US-ORD-01: оформление заказа (checkout)
+# ============================================================
+from .models import Order, OrderItem
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OrderItem
+        fields = (
+            "id", "sku_id", "product_id", "product_title",
+            "sku_name", "quantity", "unit_price", "line_total",
+        )
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+    items_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = (
+            "id", "status", "items", "items_count",
+            "total_amount", "delivery_address", "created_at", "updated_at",
+        )
+
+    def get_items_count(self, obj):
+        # use prefetched items if available, else count
+        if hasattr(obj, "_prefetched_objects_cache") and "items" in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache["items"])
+        return obj.items.count()
+
+
+class OrderListSerializer(serializers.ModelSerializer):
+    """Краткое представление заказа для списка — без позиций."""
+    items_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Order
+        fields = (
+            "id", "status", "items_count",
+            "total_amount", "created_at", "updated_at",
+        )
+
+    def get_items_count(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "items" in obj._prefetched_objects_cache:
+            return len(obj._prefetched_objects_cache["items"])
+        return obj.items.count()
+
+
+class CheckoutItemSerializer(serializers.Serializer):
+    """Одна позиция в запросе POST /api/v1/orders."""
+    sku_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+
+
+class CheckoutRequestSerializer(serializers.Serializer):
+    """Тело запроса POST /api/v1/orders."""
+    idempotency_key = serializers.UUIDField()
+    items = serializers.ListField(
+        child=CheckoutItemSerializer(),
+        min_length=1,
+    )
+    delivery_address = serializers.CharField(required=False, allow_blank=True, default="")

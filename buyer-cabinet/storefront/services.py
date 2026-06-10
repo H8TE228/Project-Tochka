@@ -368,3 +368,47 @@ def product_card_response(product: dict) -> dict:
         ],
         "skus": [sku_response(sku) for sku in skus],
     }
+
+
+# ============================================================
+# US-ORD-01: B2B reserve / unreserve helpers
+# ============================================================
+
+def b2b_reserve(idempotency_key: str, items: list[dict]):
+    """
+    POST /api/v1/reserve к B2B.
+    items: [{"sku_id": "...", "quantity": N}, ...]
+    Возвращает requests.Response.
+    Поднимает UpstreamUnavailable при сетевой ошибке.
+    """
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/reserve")
+    try:
+        response = requests.post(
+            url,
+            json={"idempotency_key": idempotency_key, "items": items},
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
+
+
+def b2b_unreserve(order_id: str, items: list[dict]):
+    """
+    POST /api/v1/unreserve к B2B.
+    items: [{"sku_id": "...", "quantity": N}, ...]
+    Возвращает requests.Response.
+    Поднимает UpstreamUnavailable при сетевой ошибке.
+    """
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/unreserve")
+    try:
+        response = requests.post(
+            url,
+            json={"order_id": order_id, "items": items},
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
