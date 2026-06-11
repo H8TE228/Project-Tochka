@@ -22,3 +22,16 @@ class IsServiceAuthenticated(IsAuthenticated):
         if not request.user or not request.user.is_authenticated:
             raise NotAuthenticated()
         return getattr(request.user, "is_service", False)
+
+
+class IsModerator(BasePermission):
+    """Allow access only to JWT users with role='moderator'."""
+
+    message = "Only moderators can perform this action."
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            raise NotAuthenticated()
+        if getattr(request.user, "role", None) != "moderator":
+            raise PermissionDenied(self.message)
+        return True

@@ -49,6 +49,9 @@ B2C_URL = os.getenv("B2C_URL", "http://b2c:8003")
 B2B_TO_MOD_KEY = os.getenv("B2B_TO_MOD_KEY", "dev-b2b-to-mod-key")
 B2B_TO_B2C_KEY = os.getenv("B2B_TO_B2C_KEY", "dev-b2b-to-b2c-key")
 SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
+# Moderation → B2B event delivery (US-MOD-03)
+B2B_URL = os.getenv("B2B_URL", "http://seller-cabinet:8001")
+MOD_TO_B2B_KEY = os.getenv("MOD_TO_B2B_KEY", "dev-service-api-key")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [

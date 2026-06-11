@@ -130,3 +130,31 @@ def transition_on_edit(product: Product) -> bool:
         publish_to_moderation("EDITED", product)
         return True
     return False
+
+
+def publish_moderation_approved_to_b2b(product_id: str) -> None:
+    """
+    US-MOD-03: Moderation → B2B — одобрение товара (канон-flow MOD-3).
+
+    Отправляем событие MODERATED в B2B. Используем transaction.on_commit,
+    чтобы событие ушло только после успешного коммита транзакции.
+    Повторная доставка безопасна: B2B-сторона (ModerationEventApplyView)
+    идемпотентна по (service_id, idempotency_key).
+
+    ADR (краткое): выбран синхронный POST через on_commit (упрощённый outbox).
+    Надёжнее прямого вызова в обработчике (статус в БД уже сохранён до отправки),
+    проще полноценного outbox с фоновым воркером. При недоступности B2B событие
+    теряется, но повторный approve модератором пересоздаст его — приемлемо для MVP.
+    """
+    payload = {
+        "product_id": product_id,
+        "event_type": "MODERATED",
+        "hard_block": False,
+        "occurred_at": _iso_now(),
+        "idempotency_key": str(uuid.uuid4()),
+        "field_reports": None,
+        "blocking_reason_id": None,
+    }
+    url = f"{settings.B2B_URL}/api/v1/moderation/events"
+    key = settings.MOD_TO_B2B_KEY
+    transaction.on_commit(lambda: _post_event(url, payload, key))

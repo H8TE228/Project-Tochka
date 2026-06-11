@@ -17,7 +17,7 @@ from seller_cabinet.authentication import (
     PublicCatalogAuthentication,
     RequireServiceKeyAuthentication,
 )
-from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated
+from seller_cabinet.permissions import IsSeller, IsServiceAuthenticated, IsModerator
 
 from .models import (
     Product,
@@ -29,6 +29,7 @@ from .models import (
     InventoryReservation,
     ProcessedRequest,
     ProcessedModerationEvent,
+    ProductModeration,
 )
 from .serializers import (
     ProductReadSerializer,
@@ -55,6 +56,7 @@ from .services import (
     publish_product_deleted_to_b2c,
     publish_sku_out_of_stock_to_b2c,
     publish_product_blocked_to_b2c,
+    publish_moderation_approved_to_b2b,
 )
 
 
@@ -890,6 +892,83 @@ class UnreserveView(APIView):
             _inventory_order_response(
                 order_id, processed_at, status_value="UNRESERVED"
             ),
+            status=status.HTTP_200_OK,
+        )
+
+
+class ProductApproveView(APIView):
+    """
+    POST /api/v1/products/{product_id}/approve — US-MOD-03 (канон-flow MOD-3).
+
+    Одобрение товара модератором: IN_REVIEW → MODERATED.
+    Предусловия:
+    1. Карточка модерации существует
+    2. status = IN_REVIEW
+    3. moderator_id = текущий модератор
+    4. Товар имеет хотя бы один SKU
+
+    После успешного одобрения отправляет событие MODERATED в B2B
+    через transaction.on_commit (упрощённый outbox-паттерн).
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsModerator]
+
+    def post(self, request, product_id):
+        moderator_uuid = _auth_uuid_from_user(request.user)
+
+        with transaction.atomic():
+            try:
+                card = (
+                    ProductModeration.objects
+                    .select_related("product")
+                    .select_for_update()
+                    .get(product_id=product_id)
+                )
+            except ProductModeration.DoesNotExist:
+                return Response(
+                    {"error": "Product not found in moderation queue"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if card.status == ProductModeration.ModerationStatus.HARD_BLOCKED:
+                return Response(
+                    {"error": "Product is permanently blocked"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if card.status != ProductModeration.ModerationStatus.IN_REVIEW:
+                return Response(
+                    {"error": "Product is not in review status"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if card.moderator_id != moderator_uuid:
+                return Response(
+                    {"error": "This moderation card is not assigned to you"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            if not card.product.skus.exists():
+                return Response(
+                    {"error": "Product has no SKUs, cannot approve"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            from django.utils import timezone as tz
+            moderator_comment = (request.data or {}).get("moderator_comment", "") or ""
+
+            card.status = ProductModeration.ModerationStatus.MODERATED
+            card.moderator_comment = moderator_comment
+            card.date_moderation = tz.now()
+            card.save(
+                update_fields=["status", "moderator_comment", "date_moderation", "date_updated"]
+            )
+
+            publish_moderation_approved_to_b2b(str(product_id))
+
+        return Response(
+            {"product_id": str(product_id), "status": "MODERATED"},
             status=status.HTTP_200_OK,
         )
 
