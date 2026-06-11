@@ -786,33 +786,72 @@ class BannerEventsView(APIView):
 # US-CART-05: подборки товаров на главной
 # ============================================================
 class CollectionListView(APIView):
-    """GET /api/v1/main/collections — список активных подборок (публичный)."""
+    """GET /api/v1/catalog/collections — список активных подборок с товарами (публичный).
+
+    Контракт: возвращает plain array объектов Collection.
+    Каждая Collection содержит поле products с обогащёнными данными из B2B.
+    Недоступные в B2B товары исключаются — их UUID в unavailable_ids.
+    """
 
     authentication_classes = []
     permission_classes = []
 
     def get(self, request):
-        limit = normalize_pagination(
-            request.query_params.get("limit"), default=10, minimum=1, maximum=MAX_LIMIT
-        )
-        offset = normalize_pagination(
-            request.query_params.get("offset"), default=0, minimum=0
-        )
         today = timezone.now().date()
-        qs = Collection.objects.filter(
-            is_active=True
-        ).filter(
-            models.Q(start_date__isnull=True) | models.Q(start_date__lte=today)
-        ).order_by("-priority", "-created_at")
+        qs = list(
+            Collection.objects.filter(
+                is_active=True
+            ).filter(
+                models.Q(start_date__isnull=True) | models.Q(start_date__lte=today)
+            ).prefetch_related("collection_products")
+            .order_by("-priority", "-created_at")
+        )
 
-        total_count = qs.count()
-        collections = qs[offset: offset + limit]
-        return Response({
-            "items": CollectionSerializer(collections, many=True).data,
-            "total_count": total_count,
-            "limit": limit,
-            "offset": offset,
+        if not qs:
+            return Response([])
+
+        # Собираем все product_ids по всем подборкам для одного batch-запроса к B2B
+        all_product_ids = list({
+            str(cp.product_id)
+            for col in qs
+            for cp in col.collection_products.all()
         })
+
+        b2b_by_id = {}
+        if all_product_ids:
+            try:
+                upstream = b2b_post(
+                    "/api/v1/public/products",
+                    params=[],
+                    json_data={"product_ids": all_product_ids},
+                )
+                if upstream.status_code < 400:
+                    b2b_items = upstream.json().get("items", [])
+                    b2b_by_id = {str(p.get("id")): p for p in b2b_items}
+            except UpstreamUnavailable:
+                # При недоступности B2B возвращаем подборки с пустыми products
+                pass
+
+        result = []
+        for col in qs:
+            ordered_ids = [
+                str(cp.product_id)
+                for cp in sorted(col.collection_products.all(), key=lambda x: x.ordering)
+            ]
+            products = [b2b_by_id[pid] for pid in ordered_ids if pid in b2b_by_id]
+            unavailable_ids = [pid for pid in ordered_ids if pid not in b2b_by_id]
+            result.append({
+                "id": str(col.id),
+                "title": col.title,
+                "description": col.description,
+                "cover_image_url": col.cover_image_url,
+                "target_url": col.target_url,
+                "priority": col.priority,
+                "products": products,
+                "unavailable_ids": unavailable_ids,
+            })
+
+        return Response(result)
 
 
 class CollectionProductsView(APIView):

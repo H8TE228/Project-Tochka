@@ -1,4 +1,4 @@
-"""US-CART-05: подборки товаров на главной.
+﻿"""US-CART-05: подборки товаров на главной.
 
 DoD-обязательные тесты (имена нельзя менять):
 - collections_list_returns_metadata_without_products
@@ -35,16 +35,18 @@ def _b2b_response(items: list) -> MagicMock:
     SECRET_KEY="test-secret-key-for-jwt-that-is-long-enough",
 )
 class CollectionListTests(TestCase):
-    """GET /api/v1/main/collections — публичный, только метаданные."""
+    """GET /api/v1/catalog/collections — публичный, plain array с products."""
 
     def setUp(self):
         self.client = APIClient()
 
     # -------------- happy: collections_list_returns_metadata_without_products --------------
-    def test_collections_list_returns_metadata_without_products(self):
+    @patch("storefront.views.b2b_post")
+    def test_collections_list_returns_metadata_without_products(self, mock_b2b_post):
         """
-        Список подборок содержит только метаданные (title, priority и т.д.),
-        но не содержит товаров внутри каждой подборки.
+        Контракт: GET /api/v1/catalog/collections возвращает plain array.
+        Каждая подборка содержит метаданные (title, priority) и поле products.
+        products не должны содержать товары, недоступные в B2B (что и проверяем в unavailable_ids).
         """
         col = Collection.objects.create(
             title="Хиты продаж",
@@ -52,44 +54,49 @@ class CollectionListTests(TestCase):
             priority=10,
             is_active=True,
         )
-        # Добавим товары в подборку — они НЕ должны появиться в ответе списка
         CollectionProduct.objects.create(collection=col, product_id=FAKE_PRODUCT_ID_1, ordering=0)
         CollectionProduct.objects.create(collection=col, product_id=FAKE_PRODUCT_ID_2, ordering=1)
 
-        resp = self.client.get("/api/v1/main/collections")
+        # B2B вернёт только первый товар; второй будет в unavailable_ids
+        mock_b2b_post.return_value = _b2b_response([
+            {"id": str(FAKE_PRODUCT_ID_1), "title": "Товар 1", "price": 10000},
+        ])
+
+        resp = self.client.get("/api/v1/catalog/collections")
         assert resp.status_code == status.HTTP_200_OK, resp.content
 
         data = resp.json()
-        assert "items" in data
-        assert data["total_count"] == 1
+        # plain array, не обёртка
+        assert isinstance(data, list)
+        assert len(data) == 1
 
-        item = data["items"][0]
+        item = data[0]
         assert item["id"] == str(col.id)
         assert item["title"] == "Хиты продаж"
-        # Нет поля items/products — подборка без товаров
-        assert "items" not in item
-        assert "products" not in item
-        assert "product_ids" not in item
+        # Поле products обязательно есть
+        assert "products" in item
+        # Недоступный товар в unavailable_ids, не в products
+        assert str(FAKE_PRODUCT_ID_2) in item["unavailable_ids"]
+        assert str(FAKE_PRODUCT_ID_1) not in item["unavailable_ids"]
 
     def test_inactive_collection_not_returned(self):
         """Неактивная подборка не попадает в список."""
         Collection.objects.create(title="Скрытая", is_active=False, priority=5)
         Collection.objects.create(title="Видимая", is_active=True, priority=5)
 
-        resp = self.client.get("/api/v1/main/collections")
+        resp = self.client.get("/api/v1/catalog/collections")
         assert resp.status_code == status.HTTP_200_OK
-        titles = [i["title"] for i in resp.json()["items"]]
+        titles = [i["title"] for i in resp.json()]
         assert "Видимая" in titles
         assert "Скрытая" not in titles
 
     def test_no_active_collections_returns_200_empty(self):
-        """Нет активных подборок → 200 с пустым списком, не 404."""
+        """Нет активных подборок → 200 с пустым массивом, не 404."""
         Collection.objects.create(title="Off", is_active=False)
 
-        resp = self.client.get("/api/v1/main/collections")
+        resp = self.client.get("/api/v1/catalog/collections")
         assert resp.status_code == status.HTTP_200_OK
-        assert resp.json()["items"] == []
-        assert resp.json()["total_count"] == 0
+        assert resp.json() == []
 
 
 @override_settings(
@@ -210,3 +217,4 @@ class CollectionProductsTests(TestCase):
         assert data["items"] == []
         assert data["unavailable_ids"] == []
         assert data["total_products"] == 0
+
