@@ -108,12 +108,16 @@ class OrderItemSerializer(serializers.ModelSerializer):
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
     items_count = serializers.SerializerMethodField()
+    buyer_id = serializers.UUIDField(source="user_id", read_only=True)
+    subtotal = serializers.IntegerField(source="total_amount", read_only=True)
+    total = serializers.IntegerField(source="total_amount", read_only=True)
+    address = serializers.CharField(source="delivery_address", read_only=True)
 
     class Meta:
         model = Order
         fields = (
-            "id", "status", "items", "items_count",
-            "total_amount", "delivery_address", "created_at", "updated_at",
+            "id", "buyer_id", "status", "items", "items_count",
+            "subtotal", "total", "address", "created_at", "updated_at",
         )
 
     def get_items_count(self, obj):
@@ -148,9 +152,9 @@ class CheckoutItemSerializer(serializers.Serializer):
 
 class CheckoutRequestSerializer(serializers.Serializer):
     """Тело запроса POST /api/v1/orders."""
-    idempotency_key = serializers.UUIDField()
+    address_id = serializers.UUIDField()
+    payment_method_id = serializers.UUIDField()
     items = serializers.ListField(
         child=CheckoutItemSerializer(),
         min_length=1,
     )
-    delivery_address = serializers.CharField(required=False, allow_blank=True, default="")

@@ -980,13 +980,26 @@ class OrderListCreateView(APIView):
         })
 
     def post(self, request):
+        raw_key = request.META.get("HTTP_IDEMPOTENCY_KEY", "")
+        if not raw_key:
+            return Response(
+                {"code": "MISSING_HEADER", "message": "Idempotency-Key header is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            idempotency_key = uuid.UUID(raw_key)
+        except (ValueError, AttributeError):
+            return Response(
+                {"code": "INVALID_HEADER", "message": "Idempotency-Key must be a valid UUID"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         ser = CheckoutRequestSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        idempotency_key = data["idempotency_key"]
         items = data["items"]
-        delivery_address = data.get("delivery_address", "")
+        delivery_address = str(data["address_id"])
 
         # 0. Idempotency check — вернуть существующий заказ без повторного резервирования
         try:

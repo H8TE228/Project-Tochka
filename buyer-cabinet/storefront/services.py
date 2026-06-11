@@ -376,12 +376,12 @@ def product_card_response(product: dict) -> dict:
 
 def b2b_reserve(idempotency_key: str, items: list[dict]):
     """
-    POST /api/v1/reserve к B2B.
+    POST /api/v1/inventory/reserve к B2B.
     items: [{"sku_id": "...", "quantity": N}, ...]
     Возвращает requests.Response.
     Поднимает UpstreamUnavailable при сетевой ошибке.
     """
-    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/reserve")
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/inventory/reserve")
     try:
         response = requests.post(
             url,
