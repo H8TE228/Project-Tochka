@@ -99,14 +99,14 @@ class CheckoutTests(TestCase):
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {make_jwt()}")
 
-    def _checkout_payload(self, idempotency_key=None):
+    def _checkout_payload(self):
         return {
-            "idempotency_key": str(idempotency_key or uuid.uuid4()),
             "items": [
                 {"sku_id": SKU_A, "quantity": 2},
                 {"sku_id": SKU_B, "quantity": 1},
             ],
-            "delivery_address": "ул. Ленина 1, кв. 5",
+            "address_id": str(uuid.uuid4()),
+            "payment_method_id": str(uuid.uuid4()),
         }
 
     # -------------- happy: checkout_creates_paid_order_with_fixed_prices --------------
@@ -121,7 +121,8 @@ class CheckoutTests(TestCase):
         mock_reserve.return_value = _reserve_success()
 
         payload = self._checkout_payload()
-        resp = self.client.post("/api/v1/orders", payload, format="json")
+        resp = self.client.post("/api/v1/orders", payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
         assert resp.status_code == http_status.HTTP_201_CREATED, resp.content
 
         data = resp.json()
@@ -151,7 +152,8 @@ class CheckoutTests(TestCase):
         mock_reserve.return_value = _reserve_409(failed_sku=SKU_B)
 
         payload = self._checkout_payload()
-        resp = self.client.post("/api/v1/orders", payload, format="json")
+        resp = self.client.post("/api/v1/orders", payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
         assert resp.status_code == http_status.HTTP_409_CONFLICT, resp.content
 
         data = resp.json()
@@ -173,11 +175,12 @@ class CheckoutTests(TestCase):
         mock_get_products.return_value = _b2b_products_response(skus_available=True)
         mock_reserve.return_value = _reserve_success()
 
-        idempotency_key = uuid.uuid4()
-        payload = self._checkout_payload(idempotency_key=idempotency_key)
+        idempotency_key = str(uuid.uuid4())
+        payload = self._checkout_payload()
 
         # Первый запрос
-        resp1 = self.client.post("/api/v1/orders", payload, format="json")
+        resp1 = self.client.post("/api/v1/orders", payload, format="json",
+                                 HTTP_IDEMPOTENCY_KEY=idempotency_key)
         assert resp1.status_code == http_status.HTTP_201_CREATED
 
         # Сбрасываем моки чтобы убедиться что второй запрос не дёргает B2B
@@ -185,7 +188,8 @@ class CheckoutTests(TestCase):
         mock_reserve.reset_mock()
 
         # Повторный запрос с тем же ключом
-        resp2 = self.client.post("/api/v1/orders", payload, format="json")
+        resp2 = self.client.post("/api/v1/orders", payload, format="json",
+                                 HTTP_IDEMPOTENCY_KEY=idempotency_key)
         assert resp2.status_code == http_status.HTTP_200_OK, resp2.content
         assert resp2.json()["id"] == resp1.json()["id"]
 
@@ -206,7 +210,8 @@ class CheckoutTests(TestCase):
         mock_get_products.side_effect = UpstreamUnavailable("b2b down")
 
         payload = self._checkout_payload()
-        resp = self.client.post("/api/v1/orders", payload, format="json")
+        resp = self.client.post("/api/v1/orders", payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
         assert resp.status_code == http_status.HTTP_503_SERVICE_UNAVAILABLE, resp.content
         assert resp.json()["code"] == "B2B_UNAVAILABLE"
 
@@ -223,10 +228,12 @@ class CheckoutTests(TestCase):
     def test_empty_items_returns_400(self):
         """items: [] → 400 (невалидный запрос)."""
         payload = {
-            "idempotency_key": str(uuid.uuid4()),
             "items": [],
+            "address_id": str(uuid.uuid4()),
+            "payment_method_id": str(uuid.uuid4()),
         }
-        resp = self.client.post("/api/v1/orders", payload, format="json")
+        resp = self.client.post("/api/v1/orders", payload, format="json",
+                                HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
         assert resp.status_code == http_status.HTTP_400_BAD_REQUEST
 
     @patch("storefront.views.b2b_reserve")
@@ -236,7 +243,8 @@ class CheckoutTests(TestCase):
         mock_get_products.return_value = _b2b_products_response(skus_available=True)
         mock_reserve.return_value = _reserve_success()
 
-        self.client.post("/api/v1/orders", self._checkout_payload(), format="json")
+        self.client.post("/api/v1/orders", self._checkout_payload(), format="json",
+                          HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
 
         resp = self.client.get("/api/v1/orders")
         assert resp.status_code == http_status.HTTP_200_OK
@@ -251,7 +259,8 @@ class CheckoutTests(TestCase):
         mock_get_products.return_value = _b2b_products_response(skus_available=True)
         mock_reserve.return_value = _reserve_success()
 
-        create_resp = self.client.post("/api/v1/orders", self._checkout_payload(), format="json")
+        create_resp = self.client.post("/api/v1/orders", self._checkout_payload(), format="json",
+                                        HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()))
         order_id = create_resp.json()["id"]
 
         resp = self.client.get(f"/api/v1/orders/{order_id}")

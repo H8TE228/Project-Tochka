@@ -67,7 +67,7 @@ urlpatterns = [
     path("banner-events", BannerEventsView.as_view(), name="banner-events"),
 
     # US-CART-05: подборки товаров
-    path("main/collections", CollectionListView.as_view(), name="main-collections"),
+    path("catalog/collections", CollectionListView.as_view(), name="catalog-collections"),
     path("collections/<uuid:collection_id>/products", CollectionProductsView.as_view(), name="collection-products"),
 
     # US-ORD-01: заказы
