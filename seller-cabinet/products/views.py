@@ -986,12 +986,10 @@ class ModerationEventApplyView(APIView):
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
-        service_id = request.headers.get("X-Service-Id")
-        if not service_id:
-            return Response(
-                {"code": "INVALID_REQUEST", "message": "Missing X-Service-Id"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # X-Service-Id опционален; без него scope идемпотентности — по X-Service-Key.
+        service_id = request.headers.get("X-Service-Id") or request.headers.get(
+            "X-Service-Key"
+        )
 
         serializer = ModerationEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
