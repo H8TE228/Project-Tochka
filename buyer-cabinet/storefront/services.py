@@ -401,7 +401,7 @@ def b2b_unreserve(order_id: str, items: list[dict]):
     Возвращает requests.Response.
     Поднимает UpstreamUnavailable при сетевой ошибке.
     """
-    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/unreserve")
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/inventory/unreserve")
     try:
         response = requests.post(
             url,
