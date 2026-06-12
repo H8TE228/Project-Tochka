@@ -896,13 +896,13 @@ class UnreserveView(APIView):
         )
 
 
-class ProductApproveView(APIView):
+class TicketApproveView(APIView):
     """
-    POST /api/v1/products/{product_id}/approve — US-MOD-03 (канон-flow MOD-3).
+    POST /api/v1/tickets/{ticket_id}/approve — US-MOD-03 (канон-flow MOD-3).
 
-    Одобрение товара модератором: IN_REVIEW → MODERATED.
+    Одобрение тикета модерации: IN_REVIEW → MODERATED (API: APPROVED).
     Предусловия:
-    1. Карточка модерации существует
+    1. Тикет существует
     2. status = IN_REVIEW
     3. moderator_id = текущий модератор
     4. Товар имеет хотя бы один SKU
@@ -914,7 +914,7 @@ class ProductApproveView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsModerator]
 
-    def post(self, request, product_id):
+    def post(self, request, ticket_id):
         moderator_uuid = _auth_uuid_from_user(request.user)
 
         with transaction.atomic():
@@ -923,35 +923,35 @@ class ProductApproveView(APIView):
                     ProductModeration.objects
                     .select_related("product")
                     .select_for_update()
-                    .get(product_id=product_id)
+                    .get(id=ticket_id)
                 )
             except ProductModeration.DoesNotExist:
                 return Response(
-                    {"error": "Product not found in moderation queue"},
+                    {"code": "NOT_FOUND", "message": "Ticket not found in moderation queue"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
             if card.status == ProductModeration.ModerationStatus.HARD_BLOCKED:
                 return Response(
-                    {"error": "Product is permanently blocked"},
+                    {"code": "HARD_BLOCKED", "message": "Product is permanently blocked"},
                     status=status.HTTP_409_CONFLICT,
                 )
 
             if card.status != ProductModeration.ModerationStatus.IN_REVIEW:
                 return Response(
-                    {"error": "Product is not in review status"},
+                    {"code": "NOT_IN_REVIEW", "message": "Product is not in review status"},
                     status=status.HTTP_409_CONFLICT,
                 )
 
             if card.moderator_id != moderator_uuid:
                 return Response(
-                    {"error": "This moderation card is not assigned to you"},
+                    {"code": "FORBIDDEN", "message": "This moderation card is not assigned to you"},
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
             if not card.product.skus.exists():
                 return Response(
-                    {"error": "Product has no SKUs, cannot approve"},
+                    {"code": "NO_SKU", "message": "Product has no SKUs, cannot approve"},
                     status=status.HTTP_409_CONFLICT,
                 )
 
@@ -965,10 +965,18 @@ class ProductApproveView(APIView):
                 update_fields=["status", "moderator_comment", "date_moderation", "date_updated"]
             )
 
-            publish_moderation_approved_to_b2b(str(product_id))
+            publish_moderation_approved_to_b2b(str(card.product_id))
 
         return Response(
-            {"product_id": str(product_id), "status": "MODERATED"},
+            {
+                "id": str(card.id),
+                "product_id": str(card.product_id),
+                "seller_id": str(card.seller_id),
+                "kind": card.kind,
+                "status": "APPROVED",
+                "queue_priority": card.queue_priority,
+                "created_at": card.date_created.isoformat(),
+            },
             status=status.HTTP_200_OK,
         )
 
