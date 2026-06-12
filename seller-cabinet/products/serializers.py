@@ -369,7 +369,7 @@ class ModerationEventSerializer(serializers.Serializer):
     """openapi: ModerationEvent."""
     product_id = serializers.UUIDField()
     event_type = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
-    hard_block = serializers.BooleanField()
+    hard_block = serializers.BooleanField(required=False, default=False)
     occurred_at = serializers.DateTimeField()
     field_reports = serializers.JSONField(required=False, allow_null=True)
     blocking_reason_id = serializers.UUIDField(required=False, allow_null=True)
