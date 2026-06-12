@@ -842,7 +842,7 @@ class CollectionListView(APIView):
             unavailable_ids = [pid for pid in ordered_ids if pid not in b2b_by_id]
             result.append({
                 "id": str(col.id),
-                "title": col.title,
+                "name": col.title,
                 "description": col.description,
                 "cover_image_url": col.cover_image_url,
                 "target_url": col.target_url,
