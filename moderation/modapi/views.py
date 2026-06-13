@@ -9,7 +9,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from moderation.authentication import JWTAuthentication, RequireServiceKeyAuthentication
 from moderation.permissions import IsServiceAuthenticated
 
-from .serializers import B2BEventSerializer
+from .serializers import B2BEventSerializer, QueueClaimRequestSerializer, ProductModerationResponseSerializer
 
 from .services import (
     MAX_LIMIT,
@@ -22,7 +22,7 @@ from .services import (
 )
 
 import uuid
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 from django.db import transaction
@@ -68,3 +68,45 @@ class B2BEventView(APIView):
             return handle_event_deleted(validated_data=validated_data)
         
         return Response(status=status.HTTP_400_BAD_REQUEST)
+
+
+class QueueClaimView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = QueueClaimRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        queue_id = validated_data.get('queue_priority')
+        moderator_id = request.user.id
+
+        if ProductModeration.objects.filter(moderator_id=moderator_id, status='IN_REVIEW').exists():
+            return Response(
+                {"detail": "You already have a pending product in review."},
+                status=status.HTTP_409_CONFLICT
+            )
+        
+        with transaction.atomic():
+            queryset = ProductModeration.objects.filter(status='PENDING')
+
+            if queue_id is not None:
+                queryset = queryset.filter(queue_priority=queue_id).order_by('date_updated')
+            else:
+                queryset = queryset.order_by('queue_priority', 'date_updated')
+
+            product_to_review = queryset.select_for_update(skip_locked=True).first()
+            if not product_to_review:
+                return Response(
+                    {"detail": "No pending products available."},
+                    status=status.HTTP_204_NO_CONTENT
+                )
+            
+            product_to_review.status = ProductModeration.Status.IN_REVIEW
+            product_to_review.moderator_id = moderator_id
+            product_to_review.date_updated = timezone.now()
+            product_to_review.save()
+
+        serializer = ProductModerationResponseSerializer(product_to_review)
+        return Response(serializer.data, status=status.HTTP_200_OK)

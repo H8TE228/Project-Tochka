@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Favorite
+from .models import ProductModeration, ProductBlockingReason
 
 
 class EventProductCreatedSerializer(serializers.Serializer):
@@ -65,3 +65,45 @@ class B2BEventSerializer(serializers.Serializer):
             data['payload'] = sub_serializer.validated_data
         
         return data
+
+
+class QueueClaimRequestSerializer(serializers.Serializer):
+    queue_priority = serializers.IntegerField(
+        required=False,
+        min_value=1,
+        max_value=4,
+    )
+    category_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        allow_empty=True,
+        required=False
+    )
+
+
+class ProductBlockingReasonSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ProductBlockingReason
+        fields = ['id', 'title', 'hard_block']
+
+
+class ProductModerationResponseSerializer(serializers.ModelSerializer):
+    blocking_reason = ProductBlockingReasonSerializer(read_only=True)
+
+    class Meta:
+        model = ProductModeration
+        fields = [
+            'id',
+            'product_id',
+            'seller_id',
+            'status',
+            'queue_priority',
+            'json_before',
+            'json_after',
+            'blocking_reason',
+            'moderator_id',
+            'moderator_comment',
+            'date_created',
+            'date_updated',
+            'date_moderation',
+        ]
+        read_only_fields = fields

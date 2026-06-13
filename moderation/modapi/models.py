@@ -10,18 +10,6 @@ class User(AbstractUser):
     pass
 
 
-class Favorite(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    product_id = models.UUIDField()
-    added_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(fields=["user", "product_id"], name="unique_user_product")
-        ]
-
-
 class ProductBlockingReason(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200)
