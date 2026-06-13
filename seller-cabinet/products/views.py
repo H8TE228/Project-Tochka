@@ -44,6 +44,8 @@ from .serializers import (
     UnreserveRequestSerializer,
     InventoryOrderRequestSerializer,
     ModerationEventSerializer,
+    TicketDeclineSerializer,
+    ProductEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
     InvoiceAcceptSerializer,
@@ -57,6 +59,7 @@ from .services import (
     publish_sku_out_of_stock_to_b2c,
     publish_product_blocked_to_b2c,
     publish_moderation_approved_to_b2b,
+    publish_moderation_declined_to_b2b,
 )
 
 
@@ -1058,5 +1061,142 @@ class ModerationEventApplyView(APIView):
                 service_id=service_id,
                 idempotency_key=data["idempotency_key"],
             )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class TicketDeclineView(APIView):
+    """
+    POST /api/v1/tickets/{ticket_id}/decline — US-MOD-05 (канон-flow MOD-5).
+
+    Отклонение тикета: IN_REVIEW → HARD_BLOCKED (terminal) или BLOCKED (soft).
+    Маршрут определяется флагом hard_block в теле запроса.
+    Отправляет событие BLOCKED + hard_block в B2B через on_commit.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsModerator]
+
+    def post(self, request, ticket_id):
+        moderator_uuid = _auth_uuid_from_user(request.user)
+
+        serializer = TicketDeclineSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        hard_block = data["hard_block"]
+
+        with transaction.atomic():
+            try:
+                card = (
+                    ProductModeration.objects
+                    .select_related("product")
+                    .select_for_update()
+                    .get(id=ticket_id)
+                )
+            except ProductModeration.DoesNotExist:
+                return Response(
+                    {"code": "NOT_FOUND", "message": "Ticket not found in moderation queue"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if card.status == ProductModeration.ModerationStatus.HARD_BLOCKED:
+                return Response(
+                    {"code": "HARD_BLOCKED", "message": "Product is permanently blocked"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if card.status != ProductModeration.ModerationStatus.IN_REVIEW:
+                return Response(
+                    {"code": "NOT_IN_REVIEW", "message": "Product is not in review status"},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            if card.moderator_id != moderator_uuid:
+                return Response(
+                    {"code": "FORBIDDEN", "message": "This moderation card is not assigned to you"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            from django.utils import timezone as tz
+
+            card.status = (
+                ProductModeration.ModerationStatus.HARD_BLOCKED
+                if hard_block
+                else ProductModeration.ModerationStatus.BLOCKED
+            )
+            card.moderator_comment = data.get("moderator_comment", "")
+            card.date_moderation = tz.now()
+            card.save(
+                update_fields=["status", "moderator_comment", "date_moderation", "date_updated"]
+            )
+
+            publish_moderation_declined_to_b2b(
+                product_id=str(card.product_id),
+                hard_block=hard_block,
+                field_reports=data.get("field_reports") or [],
+            )
+
+        return Response(
+            {
+                "id": str(card.id),
+                "product_id": str(card.product_id),
+                "seller_id": str(card.seller_id),
+                "kind": card.kind,
+                "status": card.status,
+                "queue_priority": card.queue_priority,
+                "created_at": card.date_created.isoformat(),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ProductEventView(APIView):
+    """
+    POST /api/v1/events/product — приём product-событий от B2B.
+
+    - CREATED → создаёт карточку модерации в PENDING (идемпотентно)
+    - EDITED  → сбрасывает карточку в PENDING; игнорирует если HARD_BLOCKED
+    - DELETED → удаляет карточку модерации (даже если HARD_BLOCKED)
+    """
+
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
+
+    def post(self, request):
+        serializer = ProductEventSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        event = data["event"]
+        product_id = data["product_id"]
+        seller_id = data["seller_id"]
+
+        with transaction.atomic():
+            try:
+                card = (
+                    ProductModeration.objects
+                    .select_for_update()
+                    .get(product_id=product_id)
+                )
+            except ProductModeration.DoesNotExist:
+                card = None
+
+            if event == "CREATED":
+                if card is None:
+                    ProductModeration.objects.create(
+                        product_id=product_id,
+                        seller_id=seller_id,
+                        status=ProductModeration.ModerationStatus.PENDING,
+                    )
+
+            elif event == "EDITED":
+                if card is not None and card.status != ProductModeration.ModerationStatus.HARD_BLOCKED:
+                    card.status = ProductModeration.ModerationStatus.PENDING
+                    card.moderator_id = None
+                    card.save(update_fields=["status", "moderator_id", "date_updated"])
+
+            elif event == "DELETED":
+                if card is not None:
+                    card.delete()
 
         return Response(status=status.HTTP_204_NO_CONTENT)
