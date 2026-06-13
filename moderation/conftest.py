@@ -1,4 +1,5 @@
 import uuid
+import jwt
 
 import pytest
 from rest_framework.test import APIClient
@@ -62,3 +63,23 @@ def blocking_reason_factory(db):
             **kwargs
         )
     return make
+
+
+@pytest.fixture
+def jwt_client(settings):
+    """APIClient с JWT-токеном."""
+    settings.SECRET_KEY = "test-secret-key-for-jwt-that-is-long-enough"
+    
+    def create_client(user_id=None, email="moderator@test.local", role="moderator"):
+        payload = {
+            "user_id": str(user_id or uuid.uuid4()),
+            "email": email,
+            "role": role,
+        }
+        token = jwt.encode(payload, settings.SECRET_KEY, algorithm="HS256")
+        
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return client
+    
+    return create_client
