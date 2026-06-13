@@ -18,7 +18,7 @@ INSTALLED_APPS = [
     "modapi.apps.ModapiConfig",
 ]
 
-# AUTH_USER_MODEL = "modapi.User"
+AUTH_USER_MODEL = "modapi.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -54,7 +54,7 @@ SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "buyer_cabinet.authentication.JWTAuthentication",
+        "moderation.authentication.JWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -62,7 +62,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
-    "EXCEPTION_HANDLER": "buyer_cabinet.exceptions.canonical_exception_handler",
+    "EXCEPTION_HANDLER": "moderation.exceptions.canonical_exception_handler",
 }
 
 LANGUAGE_CODE = 'en-us'
@@ -71,3 +71,11 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'mod-dev-cache',
+    }
+}
+KEY_CACHE_TTL = 86400
