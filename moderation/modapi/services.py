@@ -81,7 +81,7 @@ def handle_event_created(validated_data):
     product_id = validated_data.get("payload").get('product_id')
     seller_id = validated_data.get("payload").get('seller_id')
 
-    mod_obj = ProductModeration.filter(product_id=product_id).first()
+    mod_obj = ProductModeration.objects.filter(product_id=product_id).first()
     if mod_obj and mod_obj.status == ProductModeration.Status.HARD_BLOCKED:
         return Response(status=status.HTTP_202_ACCEPTED)
     if mod_obj:
@@ -110,7 +110,7 @@ def handle_event_created(validated_data):
 def handle_event_edited(validated_data):
     product_id = validated_data.get("payload").get('product_id')
 
-    mod_obj = ProductModeration.filter(product_id=product_id).first()
+    mod_obj = ProductModeration.objects.filter(product_id=product_id).first()
     if not mod_obj:
         return Response(status=status.HTTP_400_BAD_REQUEST)
     if mod_obj.status == ProductModeration.Status.HARD_BLOCKED:
@@ -138,7 +138,7 @@ def handle_event_edited(validated_data):
 
 def handle_event_deleted(validated_data):
     product_id = validated_data.get("payload").get('product_id')
-    mod_obj = ProductModeration.filter(product_id=product_id).first()
+    mod_obj = ProductModeration.objects.filter(product_id=product_id).first()
     if not mod_obj:
         return Response(status=status.HTTP_202_ACCEPTED)
     mod_obj.delete()
