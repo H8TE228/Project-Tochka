@@ -1154,9 +1154,10 @@ class TicketDeclineView(APIView):
 
 class ProductEventView(APIView):
     """
-    POST /api/v1/events/product — приём product-событий от B2B.
+    POST /api/v1/events/product — приём product-событий от B2B (US-MOD-01).
 
-    - CREATED → создаёт карточку модерации в PENDING (идемпотентно)
+    Идемпотентность по (service_id, idempotency_key) через ProcessedModerationEvent.
+    - CREATED → создаёт карточку модерации в PENDING
     - EDITED  → сбрасывает карточку в PENDING; игнорирует если HARD_BLOCKED
     - DELETED → удаляет карточку модерации (даже если HARD_BLOCKED)
     """
@@ -1165,6 +1166,13 @@ class ProductEventView(APIView):
     permission_classes = [IsServiceAuthenticated]
 
     def post(self, request):
+        service_id = request.headers.get("X-Service-Id")
+        if not service_id:
+            return Response(
+                {"code": "INVALID_REQUEST", "message": "Missing X-Service-Id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer = ProductEventSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -1172,8 +1180,15 @@ class ProductEventView(APIView):
         event = data["event"]
         product_id = data["product_id"]
         seller_id = data["seller_id"]
+        idempotency_key = data["idempotency_key"]
 
         with transaction.atomic():
+            if ProcessedModerationEvent.objects.filter(
+                service_id=service_id,
+                idempotency_key=idempotency_key,
+            ).exists():
+                return Response(status=status.HTTP_204_NO_CONTENT)
+
             try:
                 card = (
                     ProductModeration.objects
@@ -1200,5 +1215,10 @@ class ProductEventView(APIView):
             elif event == "DELETED":
                 if card is not None:
                     card.delete()
+
+            ProcessedModerationEvent.objects.create(
+                service_id=service_id,
+                idempotency_key=idempotency_key,
+            )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
