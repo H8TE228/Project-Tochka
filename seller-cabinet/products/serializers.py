@@ -397,8 +397,8 @@ class ProductEventSerializer(serializers.Serializer):
     event = serializers.ChoiceField(choices=["CREATED", "EDITED", "DELETED"])
     product_id = serializers.UUIDField()
     seller_id = serializers.UUIDField()
+    idempotency_key = serializers.UUIDField()
     date = serializers.CharField(required=False, allow_blank=True, default="")
-    idempotency_key = serializers.UUIDField(required=False, allow_null=True)
 
 
 class ProductWriteSerializer(serializers.Serializer):
