@@ -374,7 +374,7 @@ def product_card_response(product: dict) -> dict:
 # US-ORD-01: B2B reserve / unreserve helpers
 # ============================================================
 
-def b2b_reserve(idempotency_key: str, items: list[dict]):
+def b2b_reserve(idempotency_key: str, order_id: str, items: list[dict]):
     """
     POST /api/v1/inventory/reserve к B2B.
     items: [{"sku_id": "...", "quantity": N}, ...]
@@ -385,7 +385,7 @@ def b2b_reserve(idempotency_key: str, items: list[dict]):
     try:
         response = requests.post(
             url,
-            json={"idempotency_key": idempotency_key, "items": items},
+            json={"idempotency_key": idempotency_key, "order_id": order_id, "items": items},
             headers={"X-Service-Key": settings.SERVICE_API_KEY},
             timeout=B2B_TIMEOUT_SEC,
         )
@@ -401,7 +401,7 @@ def b2b_unreserve(order_id: str, items: list[dict]):
     Возвращает requests.Response.
     Поднимает UpstreamUnavailable при сетевой ошибке.
     """
-    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/unreserve")
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/inventory/unreserve")
     try:
         response = requests.post(
             url,

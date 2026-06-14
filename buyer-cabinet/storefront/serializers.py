@@ -118,7 +118,7 @@ class OrderSerializer(serializers.ModelSerializer):
     buyer_id = serializers.UUIDField(source="user_id", read_only=True)
     subtotal = serializers.IntegerField(source="total_amount", read_only=True)
     total = serializers.IntegerField(source="total_amount", read_only=True)
-    address = serializers.CharField(source="delivery_address", read_only=True)
+    address = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -126,6 +126,16 @@ class OrderSerializer(serializers.ModelSerializer):
             "id", "buyer_id", "status", "items", "items_count",
             "subtotal", "total", "address", "created_at", "updated_at",
         )
+
+    def get_address(self, obj):
+        return {
+            "id": obj.delivery_address,
+            "created_at": None,
+            "country": None,
+            "city": None,
+            "street": None,
+            "building": None,
+        }
 
     def get_items_count(self, obj):
         # use prefetched items if available, else count
@@ -161,6 +171,8 @@ class CheckoutRequestSerializer(serializers.Serializer):
     """Тело запроса POST /api/v1/orders."""
     address_id = serializers.UUIDField()
     payment_method_id = serializers.UUIDField()
+    # items_snapshot опционален по контракту b2c/openapi.yaml:1243;
+    # если не передан — позиции берутся из корзины пользователя.
     items = serializers.ListField(
         child=CheckoutItemSerializer(),
         min_length=1,

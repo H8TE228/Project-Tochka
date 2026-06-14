@@ -100,13 +100,16 @@ class CartTests(TestCase):
         row = resp.data["items"][0]
         assert row["sku_id"] == str(FAKE_SKU_ID_1)
         assert row["quantity"] == 2
-        assert row["price"] == 50000
+        assert row["unit_price"] == 50000
+        assert row["line_total"] == 100000
         assert row["name"] == "Black 256GB"
         assert row["image"] == "/s3/x.jpg"
-        assert row["available"] is True
+        assert row["is_available"] is True
         assert row["unavailable_reason"] is None
-        # total = 50000 * 2
-        assert resp.data["total_amount"] == 100000
+        # subtotal = 50000 * 2
+        assert resp.data["subtotal"] == 100000
+        assert resp.data["items_count"] == 2
+        assert resp.data["is_valid"] is True
 
     # -------------- unhappy: unavailable_sku_shown_with_reason --------------
     @patch("storefront.views.b2b_get_products")
@@ -136,15 +139,16 @@ class CartTests(TestCase):
         rows_by_sku = {r["sku_id"]: r for r in resp.data["items"]}
 
         # Доступный SKU
-        assert rows_by_sku[str(FAKE_SKU_ID_1)]["available"] is True
+        assert rows_by_sku[str(FAKE_SKU_ID_1)]["is_available"] is True
         assert rows_by_sku[str(FAKE_SKU_ID_1)]["unavailable_reason"] is None
 
         # Недоступный SKU остаётся виден, с причиной
-        assert rows_by_sku[str(FAKE_SKU_ID_2)]["available"] is False
+        assert rows_by_sku[str(FAKE_SKU_ID_2)]["is_available"] is False
         assert rows_by_sku[str(FAKE_SKU_ID_2)]["unavailable_reason"] == "out_of_stock"
 
-        # В total_amount недоступная позиция не входит → 1000 * 1
-        assert resp.data["total_amount"] == 1000
+        # В subtotal недоступная позиция не входит → 1000 * 1
+        assert resp.data["subtotal"] == 1000
+        assert resp.data["is_valid"] is False
 
     # -------------- unhappy: guest_cart_merged_on_login --------------
     @patch("storefront.views.b2b_get_products")
