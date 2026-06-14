@@ -357,25 +357,27 @@ class TestHardBlockedProductRejectsEdits:
 class TestModerationEventErrorHandling:
     """Обработка ошибок при moderation event."""
 
-    def test_missing_x_service_id_returns_400(self, db):
-        """DoD: Missing X-Service-Id → 400."""
+    def test_contract_payload_without_hard_block_accepted(self, product_factory, db):
+        """Контракт: hard_block опционален (default=false), X-Service-Id не обязателен."""
         from django.conf import settings
+
         settings.SERVICE_API_KEY = "test-service-key"
-        
+        product = product_factory(status=Product.Status.ON_MODERATION)
+
         client = APIClient()
         client.credentials(HTTP_X_SERVICE_KEY="test-service-key")
 
         payload = {
-            "product_id": str(uuid.uuid4()),
+            "product_id": str(product.id),
             "event_type": "MODERATED",
-            "hard_block": False,
             "occurred_at": "2024-01-01T12:00:00Z",
             "idempotency_key": str(uuid.uuid4()),
         }
 
         resp = client.post("/api/v1/moderation/events", payload, format="json")
-        assert resp.status_code == 400
-        assert "X-Service-Id" in resp.data["message"]
+        assert resp.status_code == 204
+        product.refresh_from_db()
+        assert product.status == Product.Status.MODERATED
 
     def test_missing_service_key_returns_401(self, db):
         """DoD: Missing X-Service-Key → 401."""

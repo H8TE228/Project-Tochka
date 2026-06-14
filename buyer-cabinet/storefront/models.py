@@ -196,6 +196,7 @@ class Order(models.Model):
       PAID/CREATED → CANCELLED (или CANCEL_PENDING если unreserve не ответил)
     """
 
+    STATUS_CREATED = "CREATED"
     STATUS_PAID = "PAID"
     STATUS_ASSEMBLING = "ASSEMBLING"
     STATUS_DELIVERING = "DELIVERING"
@@ -204,6 +205,7 @@ class Order(models.Model):
     STATUS_CANCEL_PENDING = "CANCEL_PENDING"
 
     STATUS_CHOICES = [
+        (STATUS_CREATED, "Created"),
         (STATUS_PAID, "Paid"),
         (STATUS_ASSEMBLING, "Assembling"),
         (STATUS_DELIVERING, "Delivering"),
@@ -212,7 +214,7 @@ class Order(models.Model):
         (STATUS_CANCEL_PENDING, "Cancel Pending"),
     ]
 
-    CANCELLABLE_STATUSES = {STATUS_PAID, STATUS_ASSEMBLING}
+    CANCELLABLE_STATUSES = {STATUS_CREATED, STATUS_PAID}
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user_id = models.UUIDField(db_index=True)

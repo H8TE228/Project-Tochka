@@ -247,3 +247,47 @@ class ProcessedModerationEvent(models.Model):
                 name="uniq_processed_moderation_event_service_idempotency",
             ),
         ]
+
+
+class ProductModeration(models.Model):
+    """
+    Карточка модерации товара. Канон-flow Moderation: таблица product_moderation.
+    Хранит состояние прохождения модерации: PENDING → IN_REVIEW → MODERATED/BLOCKED/HARD_BLOCKED.
+    """
+
+    class ModerationStatus(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        IN_REVIEW = "IN_REVIEW", "In Review"
+        MODERATED = "MODERATED", "Moderated"
+        BLOCKED = "BLOCKED", "Blocked"
+        HARD_BLOCKED = "HARD_BLOCKED", "Hard Blocked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    product = models.OneToOneField(
+        Product, on_delete=models.CASCADE, related_name="moderation_card"
+    )
+    seller_id = models.UUIDField()
+
+    KIND_CREATE = "CREATE"
+    KIND_EDIT = "EDIT"
+    KIND_CHOICES = [(KIND_CREATE, "Create"), (KIND_EDIT, "Edit")]
+
+    kind = models.CharField(max_length=50, choices=KIND_CHOICES, default=KIND_CREATE)
+    status = models.CharField(
+        max_length=20,
+        choices=ModerationStatus.choices,
+        default=ModerationStatus.PENDING,
+    )
+    queue_priority = models.IntegerField(default=1)
+    moderator_id = models.UUIDField(null=True, blank=True)
+    moderator_comment = models.TextField(blank=True, default="")
+    json_after = models.JSONField(default=dict)
+    date_created = models.DateTimeField(auto_now_add=True)
+    date_updated = models.DateTimeField(auto_now=True)
+    date_moderation = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "Product Moderation Card"
+
+    def __str__(self):
+        return f"Moderation({self.product_id}, {self.status})"

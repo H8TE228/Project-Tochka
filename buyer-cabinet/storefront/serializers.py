@@ -171,8 +171,12 @@ class CheckoutRequestSerializer(serializers.Serializer):
     """Тело запроса POST /api/v1/orders."""
     address_id = serializers.UUIDField()
     payment_method_id = serializers.UUIDField()
+    # items_snapshot опционален по контракту b2c/openapi.yaml:1243;
+    # если не передан — позиции берутся из корзины пользователя.
     items = serializers.ListField(
         child=CheckoutItemSerializer(),
         min_length=1,
         required=False,
+        allow_null=True,
+        default=None,
     )
