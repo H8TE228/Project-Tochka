@@ -1010,7 +1010,16 @@ class OrderListCreateView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        items = data["items"]
+        # items_snapshot optional — если не передан, берём из корзины пользователя
+        items = data.get("items")
+        if not items:
+            cart = Cart.objects.filter(user_id=request.user.id).first()
+            if not cart or not cart.items.exists():
+                return Response(
+                    {"code": "CART_EMPTY", "message": "Cart is empty and no items provided"},
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                )
+            items = [{"sku_id": ci.sku_id, "quantity": ci.quantity} for ci in cart.items.all()]
         delivery_address = str(data["address_id"])
 
         # 0. Idempotency check — вернуть существующий заказ без повторного резервирования
