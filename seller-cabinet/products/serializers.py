@@ -381,6 +381,26 @@ class ModerationEventSerializer(serializers.Serializer):
         return value
 
 
+class TicketDeclineSerializer(serializers.Serializer):
+    """POST /api/v1/tickets/{id}/decline — US-MOD-05."""
+    hard_block = serializers.BooleanField(required=True)
+    moderator_comment = serializers.CharField(required=False, allow_blank=True, default="")
+    field_reports = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
+
+
+class ProductEventSerializer(serializers.Serializer):
+    """POST /api/v1/events/product — product events from B2B to Moderation."""
+    event = serializers.ChoiceField(choices=["CREATED", "EDITED", "DELETED"])
+    product_id = serializers.UUIDField()
+    seller_id = serializers.UUIDField()
+    idempotency_key = serializers.UUIDField()
+    date = serializers.CharField(required=False, allow_blank=True, default="")
+
+
 class ProductWriteSerializer(serializers.Serializer):
     title = serializers.CharField(max_length=255, min_length=1)
     description = serializers.CharField(max_length=5000, min_length=1)

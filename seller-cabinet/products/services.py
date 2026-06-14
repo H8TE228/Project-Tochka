@@ -132,6 +132,27 @@ def transition_on_edit(product: Product) -> bool:
     return False
 
 
+def publish_moderation_declined_to_b2b(
+    product_id: str,
+    hard_block: bool,
+    field_reports: list | None = None,
+    blocking_reason_id: str | None = None,
+) -> None:
+    """US-MOD-05: Moderation → B2B — решение об отклонении товара (BLOCKED/HARD_BLOCKED)."""
+    payload = {
+        "product_id": product_id,
+        "event_type": "BLOCKED",
+        "hard_block": hard_block,
+        "occurred_at": _iso_now(),
+        "idempotency_key": str(uuid.uuid4()),
+        "field_reports": field_reports or [],
+        "blocking_reason_id": str(blocking_reason_id) if blocking_reason_id else None,
+    }
+    url = f"{settings.B2B_URL}/api/v1/moderation/events"
+    key = settings.MOD_TO_B2B_KEY
+    transaction.on_commit(lambda: _post_event(url, payload, key))
+
+
 def publish_moderation_approved_to_b2b(product_id: str) -> None:
     """
     US-MOD-03: Moderation → B2B — одобрение товара (канон-flow MOD-3).
