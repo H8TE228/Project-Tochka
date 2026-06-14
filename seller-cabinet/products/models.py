@@ -267,6 +267,12 @@ class ProductModeration(models.Model):
         Product, on_delete=models.CASCADE, related_name="moderation_card"
     )
     seller_id = models.UUIDField()
+
+    KIND_CREATE = "CREATE"
+    KIND_EDIT = "EDIT"
+    KIND_CHOICES = [(KIND_CREATE, "Create"), (KIND_EDIT, "Edit")]
+
+    kind = models.CharField(max_length=50, choices=KIND_CHOICES, default=KIND_CREATE)
     status = models.CharField(
         max_length=20,
         choices=ModerationStatus.choices,
