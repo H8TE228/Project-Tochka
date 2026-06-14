@@ -180,7 +180,7 @@ def handle_ticket_approval(request, ticket_id, comment=None):
             {"code": "TICKET_WRONG_STATUS", "message": "Product is not in review"},
             status=status.HTTP_409_CONFLICT
         )
-    if product_card.moderator_id != request.user.id:
+    if str(product_card.moderator_id) != request.user.id:
         return Response(
             {"code": "TICKET_WRONG_MODERATOR", "message": "Not assigned to you"},
             status=status.HTTP_403_FORBIDDEN
