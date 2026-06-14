@@ -1,7 +1,7 @@
 """
 US-MOD-03: одобрение товара модератором.
 
-Канон-flow MOD-3: POST /api/v1/products/{product_id}/approve
+Канон-flow MOD-3: POST /api/v1/tickets/{ticket_id}/approve
 Endpoint переводит карточку IN_REVIEW → MODERATED и эмитирует
 событие MODERATED в B2B (канон: POST /api/v1/events/moderation).
 
@@ -86,13 +86,18 @@ def test_approve_transitions_to_moderated_and_emits_event(
 
     with patch("products.services._post_event") as mock_post:
         resp = moderator_client.post(
-            f"/api/v1/products/{moderation_card.product.id}/approve",
+            f"/api/v1/tickets/{moderation_card.id}/approve",
             format="json",
         )
 
     assert resp.status_code == 200
-    assert resp.data["status"] == "MODERATED"
+    assert resp.data["status"] == "APPROVED"
+    assert str(moderation_card.id) == resp.data["id"]
     assert str(moderation_card.product.id) == resp.data["product_id"]
+    assert str(moderation_card.seller_id) == resp.data["seller_id"]
+    assert "kind" in resp.data
+    assert "queue_priority" in resp.data
+    assert "created_at" in resp.data
 
     moderation_card.refresh_from_db()
     assert moderation_card.status == ProductModeration.ModerationStatus.MODERATED
@@ -115,7 +120,7 @@ def test_approve_others_card_returns_403(
     other_moderator_id = uuid.uuid4()
     product = product_factory(status=Product.Status.ON_MODERATION)
     sku_factory(product=product)
-    ProductModeration.objects.create(
+    card = ProductModeration.objects.create(
         product=product,
         seller_id=product.seller.auth_user_id,
         status=ProductModeration.ModerationStatus.IN_REVIEW,
@@ -123,12 +128,12 @@ def test_approve_others_card_returns_403(
     )
 
     resp = moderator_client.post(
-        f"/api/v1/products/{product.id}/approve",
+        f"/api/v1/tickets/{card.id}/approve",
         format="json",
     )
 
     assert resp.status_code == 403
-    assert "not assigned" in resp.data.get("error", "").lower()
+    assert resp.data.get("code") == "FORBIDDEN"
 
 
 def test_approve_after_edited_returns_409(
@@ -139,7 +144,7 @@ def test_approve_after_edited_returns_409(
     в PENDING (moderator_id сброшен). Повторный approve → 409.
     """
     product = product_factory(status=Product.Status.ON_MODERATION)
-    ProductModeration.objects.create(
+    card = ProductModeration.objects.create(
         product=product,
         seller_id=product.seller.auth_user_id,
         # EDITED сбрасывает status → PENDING и moderator_id → null
@@ -148,12 +153,12 @@ def test_approve_after_edited_returns_409(
     )
 
     resp = moderator_client.post(
-        f"/api/v1/products/{product.id}/approve",
+        f"/api/v1/tickets/{card.id}/approve",
         format="json",
     )
 
     assert resp.status_code == 409
-    assert "not in review" in resp.data.get("error", "").lower()
+    assert resp.data.get("code") == "NOT_IN_REVIEW"
 
 
 def test_approve_without_sku_returns_409(
@@ -167,9 +172,9 @@ def test_approve_without_sku_returns_409(
     assert not moderation_card.product.skus.exists()
 
     resp = moderator_client.post(
-        f"/api/v1/products/{moderation_card.product.id}/approve",
+        f"/api/v1/tickets/{moderation_card.id}/approve",
         format="json",
     )
 
     assert resp.status_code == 409
-    assert "SKU" in resp.data.get("error", "")
+    assert resp.data.get("code") == "NO_SKU"

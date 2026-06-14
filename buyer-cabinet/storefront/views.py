@@ -842,7 +842,7 @@ class CollectionListView(APIView):
             unavailable_ids = [pid for pid in ordered_ids if pid not in b2b_by_id]
             result.append({
                 "id": str(col.id),
-                "title": col.title,
+                "name": col.title,
                 "description": col.description,
                 "cover_image_url": col.cover_image_url,
                 "target_url": col.target_url,
@@ -998,7 +998,22 @@ class OrderListCreateView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        items = data["items"]
+        items = data.get("items")
+        if not items:
+            # items_snapshot не передан — берём из корзины пользователя
+            cart = _resolve_cart_for_request(request)
+            if cart is None:
+                return Response(
+                    {"code": "EMPTY_CART", "message": "Cart is empty or not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            cart_items = list(cart.items.all())
+            if not cart_items:
+                return Response(
+                    {"code": "EMPTY_CART", "message": "Cart is empty"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            items = [{"sku_id": ci.sku_id, "quantity": ci.quantity} for ci in cart_items]
         delivery_address = str(data["address_id"])
 
         # 0. Idempotency check — вернуть существующий заказ без повторного резервирования

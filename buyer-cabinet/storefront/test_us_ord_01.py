@@ -133,7 +133,7 @@ class CheckoutTests(TestCase):
         item_a = next(i for i in data["items"] if str(i["sku_id"]) == SKU_A)
         assert item_a["unit_price"] == 9900000
         assert item_a["line_total"] == 9900000 * 2
-        assert item_a["product_title"] == "Смартфон X"
+        assert item_a["name"] == "Смартфон X — 128GB Black"
 
         # В БД тоже фиксация
         order = Order.objects.get(id=data["id"])
