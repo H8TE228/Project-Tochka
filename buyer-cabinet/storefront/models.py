@@ -214,7 +214,7 @@ class Order(models.Model):
         (STATUS_CANCEL_PENDING, "Cancel Pending"),
     ]
 
-    CANCELLABLE_STATUSES = {STATUS_CREATED, STATUS_PAID}
+    CANCELLABLE_STATUSES = {STATUS_CREATED, STATUS_PAID, STATUS_ASSEMBLING, STATUS_DELIVERING}
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user_id = models.UUIDField(db_index=True)
