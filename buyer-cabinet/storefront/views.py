@@ -1086,6 +1086,8 @@ class OrderListCreateView(APIView):
             )
 
         # 3. Резервирование (all-or-nothing) в B2B
+        # order_id генерируется заранее, чтобы передать в reserve до создания Order
+        pending_order_id = uuid.uuid4()
         reserve_items = [
             {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
             for item in items
@@ -1093,6 +1095,7 @@ class OrderListCreateView(APIView):
         try:
             reserve_resp = b2b_reserve(
                 idempotency_key=str(idempotency_key),
+                order_id=str(pending_order_id),
                 items=reserve_items,
             )
         except UpstreamUnavailable:
@@ -1131,6 +1134,7 @@ class OrderListCreateView(APIView):
                 for item in items
             )
             order = Order.objects.create(
+                id=pending_order_id,
                 user_id=request.user.id,
                 status=Order.STATUS_PAID,
                 total_amount=total_amount,
