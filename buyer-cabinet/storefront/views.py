@@ -560,19 +560,23 @@ def _enrich_cart_items(cart) -> dict:
     items_qs = list(cart.items.all())
     sku_ids = {str(i.sku_id) for i in items_qs}
     sku_data = _SkuLookup.collect_sku_data(sku_ids) if sku_ids else {}
- 
+
     enriched = []
-    total_amount = 0
+    subtotal = 0
+    all_available = True
     for item in items_qs:
         sid = str(item.sku_id)
         bundle = sku_data.get(sid)
         if bundle is None:
+            all_available = False
             enriched.append({
                 "sku_id": sid,
                 "quantity": item.quantity,
-                "available": False,
+                "is_available": False,
                 "unavailable_reason": "sku_not_found",
-                "price": None,
+                "unit_price": None,
+                "line_total": None,
+                "available_quantity": 0,
                 "name": None,
                 "image": None,
             })
@@ -580,31 +584,39 @@ def _enrich_cart_items(cart) -> dict:
         sku = bundle["sku"]
         product = bundle["product"]
         available_qty = int(sku.get("active_quantity") or 0)
-        price = int(sku.get("price") or 0)
+        unit_price = int(sku.get("price") or 0)
         unavailable_reason = None
         if available_qty <= 0:
             unavailable_reason = "out_of_stock"
         elif available_qty < item.quantity:
             unavailable_reason = "insufficient_stock"
         is_available = unavailable_reason is None
- 
+        if not is_available:
+            all_available = False
+
+        line_total = unit_price * item.quantity if is_available else 0
         enriched.append({
             "sku_id": sid,
             "quantity": item.quantity,
-            "available": is_available,
+            "is_available": is_available,
             "unavailable_reason": unavailable_reason,
-            "price": price,
+            "unit_price": unit_price,
+            "line_total": line_total,
+            "available_quantity": available_qty,
             "name": sku.get("name") or product.get("title") or "",
             "image": sku.get("image") or "",
             "product_id": str(product.get("id")) if product.get("id") else None,
         })
         if is_available:
-            total_amount += price * item.quantity
- 
+            subtotal += line_total
+
+    items_count = sum(i["quantity"] for i in enriched)
     return {
         "id": str(cart.id),
         "items": enriched,
-        "total_amount": total_amount,
+        "items_count": items_count,
+        "subtotal": subtotal,
+        "is_valid": all_available and bool(enriched),
     }
  
  
@@ -1086,6 +1098,8 @@ class OrderListCreateView(APIView):
             )
 
         # 3. Резервирование (all-or-nothing) в B2B
+        # order_id генерируется заранее, чтобы передать в reserve до создания Order
+        pending_order_id = uuid.uuid4()
         reserve_items = [
             {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
             for item in items
@@ -1093,6 +1107,7 @@ class OrderListCreateView(APIView):
         try:
             reserve_resp = b2b_reserve(
                 idempotency_key=str(idempotency_key),
+                order_id=str(pending_order_id),
                 items=reserve_items,
             )
         except UpstreamUnavailable:
@@ -1131,6 +1146,7 @@ class OrderListCreateView(APIView):
                 for item in items
             )
             order = Order.objects.create(
+                id=pending_order_id,
                 user_id=request.user.id,
                 status=Order.STATUS_PAID,
                 total_amount=total_amount,
