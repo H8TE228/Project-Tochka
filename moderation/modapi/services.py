@@ -88,7 +88,7 @@ def handle_event_created(validated_data):
         return Response(status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        upstream_response = b2b_get(f"/api/v1/public/products/{product_id}", [])
+        upstream_response = b2b_get(f"/api/v1/products/{product_id}", [])
     except UpstreamUnavailable:
         raise UpstreamException()
     if upstream_response.status_code != status.HTTP_200_OK:
@@ -117,7 +117,7 @@ def handle_event_edited(validated_data):
         return Response(status=status.HTTP_202_ACCEPTED)
     
     try:
-        upstream_response = b2b_get(f"/api/v1/public/products/{product_id}", [])
+        upstream_response = b2b_get(f"/api/v1/products/{product_id}", [])
     except UpstreamUnavailable:
         raise UpstreamException()
     if upstream_response.status_code != status.HTTP_200_OK:
