@@ -116,20 +116,21 @@ class OrderCancelTests(TestCase):
     # -------------- unhappy: cancel_assembling_order_returns_409 --------------
     def test_cancel_assembling_order_returns_409(self):
         """
-        Заказ в ASSEMBLING нельзя отменить → 409 CANCEL_NOT_ALLOWED с current_status.
+        Заказ в DELIVERED нельзя отменить → 409 CANCEL_NOT_ALLOWED с current_status.
+        ASSEMBLING и DELIVERING — отменяемые статусы; DELIVERED — терминальный.
         B2B не вызывается, статус заказа не меняется.
         """
-        order = _create_order(USER_A_ID, order_status=Order.STATUS_ASSEMBLING)
+        order = _create_order(USER_A_ID, order_status=Order.STATUS_DELIVERED)
 
         resp = self.client_a.post(f"/api/v1/orders/{order.id}/cancel")
         assert resp.status_code == http_status.HTTP_409_CONFLICT, resp.content
 
         data = resp.json()
         assert data["code"] == "CANCEL_NOT_ALLOWED"
-        assert data["current_status"] == Order.STATUS_ASSEMBLING
+        assert data["current_status"] == Order.STATUS_DELIVERED
 
         order.refresh_from_db()
-        assert order.status == Order.STATUS_ASSEMBLING
+        assert order.status == Order.STATUS_DELIVERED
 
     # -------------- unhappy: other_user_order_returns_404 --------------
     def test_other_user_order_returns_404(self):
