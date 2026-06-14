@@ -24,6 +24,10 @@ class ProductModeration(models.Model):
         BLOCKED = 'BLOCKED', 'BLOCKED'
         HARD_BLOCKED = 'HARD_BLOCKED', 'HARD_BLOCKED'
 
+    class TicketKind(models.TextChoices):
+        CREATE = 'CREATE', 'CREATE'
+        EDIT = 'EDIT', 'EDIT'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product_id = models.UUIDField(unique=True)
     seller_id = models.UUIDField()
@@ -37,6 +41,7 @@ class ProductModeration(models.Model):
     date_created = models.DateTimeField(auto_now_add=True)
     date_updated = models.DateTimeField(auto_now=True)
     date_moderation = models.DateTimeField(null=True, blank=True)
+    ticket_kind = models.CharField(max_length=6, choices=TicketKind, default=TicketKind.CREATE)
 
     class Meta:
         constraints = [

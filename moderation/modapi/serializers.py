@@ -107,3 +107,7 @@ class ProductModerationResponseSerializer(serializers.ModelSerializer):
             'date_moderation',
         ]
         read_only_fields = fields
+
+
+class TicketApproveSerializer(serializers.Serializer):
+    comment = serializers.CharField(required=False, allow_blank=True)

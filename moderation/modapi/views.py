@@ -9,7 +9,12 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from moderation.authentication import JWTAuthentication, RequireServiceKeyAuthentication
 from moderation.permissions import IsServiceAuthenticated
 
-from .serializers import B2BEventSerializer, QueueClaimRequestSerializer, ProductModerationResponseSerializer
+from .serializers import (
+    B2BEventSerializer,
+    QueueClaimRequestSerializer,
+    ProductModerationResponseSerializer,
+    TicketApproveSerializer,
+)
 
 from .services import (
     MAX_LIMIT,
@@ -19,6 +24,7 @@ from .services import (
     handle_event_created,
     handle_event_edited,
     handle_event_deleted,
+    handle_ticket_approval,
 )
 
 import uuid
@@ -110,3 +116,16 @@ class QueueClaimView(APIView):
 
         serializer = ProductModerationResponseSerializer(product_to_review)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class TicketApproveView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, ticket_id):
+        serializer = TicketApproveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        comment = serializer.validated_data.get('comment')
+        return handle_ticket_approval(request=request, ticket_id=ticket_id, comment=comment)
+        
+        
