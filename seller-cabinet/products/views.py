@@ -959,7 +959,7 @@ class TicketApproveView(APIView):
                 )
 
             from django.utils import timezone as tz
-            moderator_comment = (request.data or {}).get("moderator_comment", "") or ""
+            moderator_comment = (request.data or {}).get("comment", "") or ""
 
             card.status = ProductModeration.ModerationStatus.MODERATED
             card.moderator_comment = moderator_comment
