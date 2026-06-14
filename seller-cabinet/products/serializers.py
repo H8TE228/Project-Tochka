@@ -369,7 +369,7 @@ class ModerationEventSerializer(serializers.Serializer):
     """openapi: ModerationEvent."""
     product_id = serializers.UUIDField()
     event_type = serializers.ChoiceField(choices=["MODERATED", "BLOCKED"])
-    hard_block = serializers.BooleanField()
+    hard_block = serializers.BooleanField(required=False, default=False)
     occurred_at = serializers.DateTimeField()
     field_reports = serializers.JSONField(required=False, allow_null=True)
     blocking_reason_id = serializers.UUIDField(required=False, allow_null=True)
@@ -379,6 +379,26 @@ class ModerationEventSerializer(serializers.Serializer):
         if value is not None and not BlockingReason.objects.filter(id=value).exists():
             raise serializers.ValidationError("Blocking reason not found")
         return value
+
+
+class TicketDeclineSerializer(serializers.Serializer):
+    """POST /api/v1/tickets/{id}/decline — US-MOD-05."""
+    hard_block = serializers.BooleanField(required=True)
+    moderator_comment = serializers.CharField(required=False, allow_blank=True, default="")
+    field_reports = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
+
+
+class ProductEventSerializer(serializers.Serializer):
+    """POST /api/v1/events/product — product events from B2B to Moderation."""
+    event = serializers.ChoiceField(choices=["CREATED", "EDITED", "DELETED"])
+    product_id = serializers.UUIDField()
+    seller_id = serializers.UUIDField()
+    idempotency_key = serializers.UUIDField()
+    date = serializers.CharField(required=False, allow_blank=True, default="")
 
 
 class ProductWriteSerializer(serializers.Serializer):

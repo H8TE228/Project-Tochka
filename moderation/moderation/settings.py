@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
+
 from dotenv import load_dotenv
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -10,18 +12,21 @@ DEBUG = os.getenv("DEBUG", "True") == "True"
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    "django.contrib.contenttypes",
-    "django.contrib.auth",
-    "rest_framework",
-    "products.apps.ProductsConfig",
+    'django.contrib.contenttypes',
+    'django.contrib.auth',
+    'rest_framework',
+    "modapi.apps.ModapiConfig",
 ]
+
+AUTH_USER_MODEL = "modapi.User"
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
 ]
 
-ROOT_URLCONF = "seller_cabinet.urls"
+ROOT_URLCONF = 'moderation.urls'
+WSGI_APPLICATION = 'moderation.wsgi.application'
 
 if os.getenv("USE_SQLITE", "").lower() in ("1", "true", "yes"):
     DATABASES = {
@@ -34,7 +39,7 @@ else:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("DB_NAME", "seller_cabinet"),
+            "NAME": os.getenv("DB_NAME", "moderation"),
             "USER": os.getenv("DB_USER", "postgres"),
             "PASSWORD": os.getenv("DB_PASS", "postgres"),
             "HOST": os.getenv("DB_HOST", "localhost"),
@@ -44,18 +49,12 @@ else:
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-MOD_URL = os.getenv("MOD_URL", "http://moderation:8002")
-B2C_URL = os.getenv("B2C_URL", "http://b2c:8003")
-B2B_TO_MOD_KEY = os.getenv("B2B_TO_MOD_KEY", "dev-b2b-to-mod-key")
-B2B_TO_B2C_KEY = os.getenv("B2B_TO_B2C_KEY", "dev-b2b-to-b2c-key")
-SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
-# Moderation → B2B event delivery (US-MOD-03)
 B2B_URL = os.getenv("B2B_URL", "http://seller-cabinet:8001")
-MOD_TO_B2B_KEY = os.getenv("MOD_TO_B2B_KEY", "dev-service-api-key")
+SERVICE_API_KEY = os.getenv("SERVICE_API_KEY", "dev-service-api-key")
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "seller_cabinet.authentication.JWTAuthentication",
+        "moderation.authentication.JWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -63,10 +62,20 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
-    "EXCEPTION_HANDLER": "seller_cabinet.exceptions.canonical_exception_handler",
+    "EXCEPTION_HANDLER": "moderation.exceptions.canonical_exception_handler",
 }
 
-LANGUAGE_CODE = "en-us"
-TIME_ZONE = "UTC"
-USE_I18N = False
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+USE_I18N = True
 USE_TZ = True
+
+STATIC_URL = 'static/'
+
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'mod-dev-cache',
+    }
+}
+KEY_CACHE_TTL = 86400

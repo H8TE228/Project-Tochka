@@ -97,12 +97,19 @@ from .models import Order, OrderItem
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
+    name = serializers.SerializerMethodField()
+
     class Meta:
         model = OrderItem
         fields = (
-            "id", "sku_id", "product_id", "product_title",
-            "sku_name", "quantity", "unit_price", "line_total",
+            "id", "sku_id", "product_id", "name",
+            "quantity", "unit_price", "line_total",
         )
+
+    def get_name(self, obj):
+        if obj.sku_name:
+            return f"{obj.product_title} — {obj.sku_name}"
+        return obj.product_title
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -164,7 +171,12 @@ class CheckoutRequestSerializer(serializers.Serializer):
     """Тело запроса POST /api/v1/orders."""
     address_id = serializers.UUIDField()
     payment_method_id = serializers.UUIDField()
+    # items_snapshot опционален по контракту b2c/openapi.yaml:1243;
+    # если не передан — позиции берутся из корзины пользователя.
     items = serializers.ListField(
         child=CheckoutItemSerializer(),
         min_length=1,
+        required=False,
+        allow_null=True,
+        default=None,
     )
