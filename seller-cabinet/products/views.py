@@ -959,7 +959,7 @@ class TicketApproveView(APIView):
                 )
 
             from django.utils import timezone as tz
-            moderator_comment = (request.data or {}).get("moderator_comment", "") or ""
+            moderator_comment = (request.data or {}).get("comment", "") or ""
 
             card.status = ProductModeration.ModerationStatus.MODERATED
             card.moderator_comment = moderator_comment
@@ -1203,14 +1203,16 @@ class ProductEventView(APIView):
                     ProductModeration.objects.create(
                         product_id=product_id,
                         seller_id=seller_id,
+                        kind=ProductModeration.KIND_CREATE,
                         status=ProductModeration.ModerationStatus.PENDING,
                     )
 
             elif event == "EDITED":
                 if card is not None and card.status != ProductModeration.ModerationStatus.HARD_BLOCKED:
+                    card.kind = ProductModeration.KIND_EDIT
                     card.status = ProductModeration.ModerationStatus.PENDING
                     card.moderator_id = None
-                    card.save(update_fields=["status", "moderator_id", "date_updated"])
+                    card.save(update_fields=["kind", "status", "moderator_id", "date_updated"])
 
             elif event == "DELETED":
                 if card is not None:
