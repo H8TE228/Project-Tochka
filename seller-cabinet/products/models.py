@@ -278,6 +278,7 @@ class ProductModeration(models.Model):
         choices=ModerationStatus.choices,
         default=ModerationStatus.PENDING,
     )
+    queue_priority = models.IntegerField(default=1)
     moderator_id = models.UUIDField(null=True, blank=True)
     moderator_comment = models.TextField(blank=True, default="")
     json_after = models.JSONField(default=dict)

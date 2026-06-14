@@ -72,7 +72,7 @@ class CollectionListTests(TestCase):
 
         item = data[0]
         assert item["id"] == str(col.id)
-        assert item["title"] == "Хиты продаж"
+        assert item["name"] == "Хиты продаж"
         # Поле products обязательно есть
         assert "products" in item
         # Недоступный товар в unavailable_ids, не в products
@@ -86,7 +86,7 @@ class CollectionListTests(TestCase):
 
         resp = self.client.get("/api/v1/catalog/collections")
         assert resp.status_code == status.HTTP_200_OK
-        titles = [i["title"] for i in resp.json()]
+        titles = [i["name"] for i in resp.json()]
         assert "Видимая" in titles
         assert "Скрытая" not in titles
 

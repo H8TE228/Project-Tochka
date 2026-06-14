@@ -187,17 +187,51 @@ def test_missing_service_key_returns_401(product_factory, sku_factory):
     assert resp.status_code == 401
 
 
-def test_missing_service_id_returns_400(service_api_client, product_factory, sku_factory):
+def test_contract_minimal_payload_accepted_with_204(service_key, product_factory, sku_factory):
+    """Событие строго по контракту: только required-поля + X-Service-Key → 204."""
     from rest_framework.test import APIClient
 
     product = product_factory(status=Product.Status.ON_MODERATION)
     sku_factory(product)
     client = APIClient()
-    client.credentials(HTTP_X_SERVICE_KEY="test-service-key")
-    resp = client.post(
-        MODERATION_URL,
-        _event_payload(product.id, event_type="MODERATED"),
-        format="json",
+    client.credentials(HTTP_X_SERVICE_KEY=service_key)
+    payload = {
+        "product_id": str(product.id),
+        "event_type": "MODERATED",
+        "occurred_at": datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
+        "idempotency_key": str(uuid.uuid4()),
+    }
+    resp = client.post(MODERATION_URL, payload, format="json")
+    assert resp.status_code == 204
+    product.refresh_from_db()
+    assert product.status == Product.Status.MODERATED
+
+
+def test_idempotency_without_service_id_header(service_key, product_factory, sku_factory):
+    """Идемпотентность работает без X-Service-Id (scope по X-Service-Key)."""
+    from rest_framework.test import APIClient
+
+    product = product_factory(status=Product.Status.ON_MODERATION)
+    sku_factory(product)
+    client = APIClient()
+    client.credentials(HTTP_X_SERVICE_KEY=service_key)
+    idem = uuid.uuid4()
+    payload = {
+        "product_id": str(product.id),
+        "event_type": "MODERATED",
+        "occurred_at": datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc).isoformat(),
+        "idempotency_key": str(idem),
+    }
+
+    first = client.post(MODERATION_URL, payload, format="json")
+    second = client.post(MODERATION_URL, payload, format="json")
+
+    assert first.status_code == 204
+    assert second.status_code == 204
+    assert (
+        ProcessedModerationEvent.objects.filter(
+            service_id=service_key,
+            idempotency_key=idem,
+        ).count()
+        == 1
     )
-    assert resp.status_code == 400
-    assert resp.data["code"] == "INVALID_REQUEST"
