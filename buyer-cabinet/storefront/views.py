@@ -998,7 +998,21 @@ class OrderListCreateView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        items = data["items"]
+        items = data.get("items")
+        if not items:
+            cart = _resolve_cart_for_request(request)
+            if cart is None:
+                return Response(
+                    {"code": "EMPTY_CART", "message": "Cart is empty or not found"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            cart_items = list(cart.items.all())
+            if not cart_items:
+                return Response(
+                    {"code": "EMPTY_CART", "message": "Cart is empty"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            items = [{"sku_id": ci.sku_id, "quantity": ci.quantity} for ci in cart_items]
         delivery_address = str(data["address_id"])
 
         # 0. Idempotency check — вернуть существующий заказ без повторного резервирования
