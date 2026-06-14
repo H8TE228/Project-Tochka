@@ -128,8 +128,14 @@ class OrderSerializer(serializers.ModelSerializer):
         )
 
     def get_address(self, obj):
-        """Returns AddressResponse object per b2c/openapi.yaml:959-966."""
-        return {"id": obj.delivery_address}
+        return {
+            "id": obj.delivery_address,
+            "created_at": None,
+            "country": None,
+            "city": None,
+            "street": None,
+            "building": None,
+        }
 
     def get_items_count(self, obj):
         # use prefetched items if available, else count
