@@ -111,7 +111,7 @@ class OrderSerializer(serializers.ModelSerializer):
     buyer_id = serializers.UUIDField(source="user_id", read_only=True)
     subtotal = serializers.IntegerField(source="total_amount", read_only=True)
     total = serializers.IntegerField(source="total_amount", read_only=True)
-    address = serializers.CharField(source="delivery_address", read_only=True)
+    address = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -119,6 +119,16 @@ class OrderSerializer(serializers.ModelSerializer):
             "id", "buyer_id", "status", "items", "items_count",
             "subtotal", "total", "address", "created_at", "updated_at",
         )
+
+    def get_address(self, obj):
+        return {
+            "id": obj.delivery_address,
+            "created_at": None,
+            "country": None,
+            "city": None,
+            "street": None,
+            "building": None,
+        }
 
     def get_items_count(self, obj):
         # use prefetched items if available, else count

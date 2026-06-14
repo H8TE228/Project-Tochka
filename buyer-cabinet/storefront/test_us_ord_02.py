@@ -123,8 +123,7 @@ class OrderViewTests(TestCase):
         item = data["items"][0]
         assert item["unit_price"] == original_price
         assert item["line_total"] == original_price * 1
-        assert item["product_title"] == "Смартфон Test"
-        assert item["sku_name"] == "128GB Black"
+        assert item["name"] == "Смартфон Test — 128GB Black"
 
         # Симулируем «изменение цены»: меняем unit_price в БД напрямую
         new_price = 99_000_000
