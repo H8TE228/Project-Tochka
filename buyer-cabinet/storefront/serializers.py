@@ -162,18 +162,24 @@ class OrderListSerializer(serializers.ModelSerializer):
 
 
 class CheckoutItemSerializer(serializers.Serializer):
-    """Одна позиция в запросе POST /api/v1/orders."""
+    """Одна позиция в запросе POST /api/v1/orders.
+
+    Соответствует b2c/openapi.yaml:1261 — required: [sku_id, quantity, unit_price].
+    unit_price — цена на момент сборки корзины на клиенте; сервер всё равно
+    сверит её с актуальной из B2B перед reserve.
+    """
     sku_id = serializers.UUIDField()
     quantity = serializers.IntegerField(min_value=1)
+    unit_price = serializers.IntegerField(min_value=0)
 
 
 class CheckoutRequestSerializer(serializers.Serializer):
-    """Тело запроса POST /api/v1/orders."""
+    """Тело запроса POST /api/v1/orders (b2c/openapi.yaml:1243 OrderCreateRequest)."""
     address_id = serializers.UUIDField()
     payment_method_id = serializers.UUIDField()
-    # items_snapshot опционален по контракту b2c/openapi.yaml:1243;
-    # если не передан — позиции берутся из корзины пользователя.
-    items = serializers.ListField(
+    # items_snapshot — имя поля по спецификации b2c/openapi.yaml:1250.
+    # Опционален: если не передан — позиции берутся из корзины пользователя.
+    items_snapshot = serializers.ListField(
         child=CheckoutItemSerializer(),
         min_length=1,
         required=False,
