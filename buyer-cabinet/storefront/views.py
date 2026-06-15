@@ -628,7 +628,14 @@ class CartView(APIView):
     def get(self, request):
         cart = _resolve_cart_for_request(request)
         if cart is None:
-            return Response({"id": None, "items": [], "total_amount": 0})
+            # Пустая корзина для анонима без X-Session-Id — той же формы, что CartResponse
+            return Response({
+                "id": None,
+                "items": [],
+                "items_count": 0,
+                "subtotal": 0,
+                "is_valid": False,
+            })
         return Response(_enrich_cart_items(cart))
  
  
@@ -1010,7 +1017,7 @@ class OrderListCreateView(APIView):
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
 
-        items = data.get("items")
+        items = data.get("items_snapshot")
         if not items:
             # items_snapshot не передан — берём из корзины пользователя
             cart = _resolve_cart_for_request(request)

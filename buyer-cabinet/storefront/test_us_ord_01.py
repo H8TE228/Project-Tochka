@@ -100,10 +100,11 @@ class CheckoutTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {make_jwt()}")
 
     def _checkout_payload(self):
+        # По openapi b2c/openapi.yaml:1250 — items_snapshot с обязательным unit_price.
         return {
-            "items": [
-                {"sku_id": SKU_A, "quantity": 2},
-                {"sku_id": SKU_B, "quantity": 1},
+            "items_snapshot": [
+                {"sku_id": SKU_A, "quantity": 2, "unit_price": 1000},
+                {"sku_id": SKU_B, "quantity": 1, "unit_price": 2000},
             ],
             "address_id": str(uuid.uuid4()),
             "payment_method_id": str(uuid.uuid4()),
