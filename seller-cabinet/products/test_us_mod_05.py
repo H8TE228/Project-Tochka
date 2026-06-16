@@ -1,10 +1,15 @@
 """
 US-MOD-05: жёсткая блокировка (необратимая).
 
-Канон-flow MOD-5: POST /api/v1/tickets/{ticket_id}/decline
-Флаг hard_block=true → ProductModeration.status = HARD_BLOCKED (терминальный).
-Событие BLOCKED + hard_block=true уходит в B2B.
-Любые правки товара после блокировки → 403.
+Канон-flow MOD-5: POST /api/v1/tickets/{ticket_id}/block — общий эндпоинт с
+soft-block. openapi: BlockDecisionRequest { blocking_reason_ids, ... }.
+Маршрут soft/hard выводится из выбранных причин (BlockingReason.hard_block),
+а не из явного флага в теле запроса — клиент не может обойти терминальность,
+просто не передав hard_block.
+
+ProductModeration.status = HARD_BLOCKED (терминальный), если хотя бы одна
+выбранная причина терминальна. Событие BLOCKED + hard_block=true уходит в B2B.
+Любые правки товара/тикета после блокировки → 403.
 
 DoD-тесты:
 - hard_block_transitions_to_terminal_and_emits_event
@@ -19,7 +24,7 @@ from unittest.mock import patch
 import pytest
 from rest_framework.test import APIClient
 
-from products.models import Product, ProductModeration
+from products.models import BlockingReason, Product, ProductModeration
 from seller_cabinet.authentication import TokenUser
 
 pytestmark = pytest.mark.django_db
@@ -60,18 +65,35 @@ def in_review_card(product_factory, moderator_id):
     )
 
 
+@pytest.fixture
+def hard_blocking_reason(db):
+    """Причина из справочника с hard_block=True — контрафакт (US-MOD-06: hard_only)."""
+    return BlockingReason.objects.create(title="Counterfeit goods", hard_block=True)
+
+
+@pytest.fixture
+def soft_blocking_reason(db):
+    """Обычная причина (hard_block=False) — для soft-block (US-MOD-04)."""
+    return BlockingReason.objects.create(title="Missing photos", hard_block=False)
+
+
 # ===== DoD Tests =====
 
 @pytest.mark.django_db(transaction=True)
-def test_hard_block_transitions_to_terminal_and_emits_event(moderator_client, in_review_card):
+def test_hard_block_transitions_to_terminal_and_emits_event(
+    moderator_client, in_review_card, hard_blocking_reason
+):
     """
-    Happy path: hard_block=true → ProductModeration.status = HARD_BLOCKED (терминальный),
-    событие BLOCKED + hard_block=true отправляется в B2B.
+    Happy path: причина с hard_block=True → ProductModeration.status = HARD_BLOCKED
+    (терминальный), событие BLOCKED + hard_block=true отправляется в B2B.
     """
     with patch("products.services._post_event") as mock_post:
         resp = moderator_client.post(
-            f"/api/v1/tickets/{in_review_card.id}/decline",
-            {"hard_block": True, "moderator_comment": "Counterfeit product"},
+            f"/api/v1/tickets/{in_review_card.id}/block",
+            {
+                "blocking_reason_ids": [str(hard_blocking_reason.id)],
+                "moderator_comment": "Counterfeit product",
+            },
             format="json",
         )
 
@@ -86,7 +108,9 @@ def test_hard_block_transitions_to_terminal_and_emits_event(moderator_client, in
 
 
 @pytest.mark.django_db(transaction=True)
-def test_hard_block_event_carries_hard_block_true(moderator_client, in_review_card):
+def test_hard_block_event_carries_hard_block_true(
+    moderator_client, in_review_card, hard_blocking_reason
+):
     """
     Событие, уходящее в B2B при hard block:
     - event_type = "BLOCKED"
@@ -95,8 +119,8 @@ def test_hard_block_event_carries_hard_block_true(moderator_client, in_review_ca
     """
     with patch("products.services._post_event") as mock_post:
         moderator_client.post(
-            f"/api/v1/tickets/{in_review_card.id}/decline",
-            {"hard_block": True},
+            f"/api/v1/tickets/{in_review_card.id}/block",
+            {"blocking_reason_ids": [str(hard_blocking_reason.id)]},
             format="json",
         )
 
@@ -106,6 +130,28 @@ def test_hard_block_event_carries_hard_block_true(moderator_client, in_review_ca
     assert call_payload["event_type"] == "BLOCKED"
     assert call_payload["hard_block"] is True
     assert call_payload["product_id"] == str(in_review_card.product_id)
+
+
+@pytest.mark.django_db(transaction=True)
+def test_soft_blocking_reason_does_not_terminate(
+    moderator_client, in_review_card, soft_blocking_reason
+):
+    """
+    Причина с hard_block=False → soft BLOCKED (не терминальный), hard_block=False в событии.
+    Контроль: маршрут определяется причиной, а не клиентским флагом.
+    """
+    with patch("products.services._post_event") as mock_post:
+        resp = moderator_client.post(
+            f"/api/v1/tickets/{in_review_card.id}/block",
+            {"blocking_reason_ids": [str(soft_blocking_reason.id)]},
+            format="json",
+        )
+
+    assert resp.status_code == 200, resp.content
+    assert resp.data["status"] == ProductModeration.ModerationStatus.BLOCKED
+
+    call_payload = mock_post.call_args[0][1]
+    assert call_payload["hard_block"] is False
 
 
 def test_any_modify_on_hard_blocked_returns_403(api_client, product_factory):
@@ -145,6 +191,31 @@ def test_any_modify_on_hard_blocked_returns_403(api_client, product_factory):
     )
     assert resp_sku.status_code == 403
     assert resp_sku.data["code"] == "FORBIDDEN"
+
+
+def test_block_on_hard_blocked_ticket_returns_403(
+    moderator_client, moderator_id, product_factory, hard_blocking_reason
+):
+    """
+    Повторный /block на тикете, уже находящемся в HARD_BLOCKED, → 403 (не 409):
+    терминальность не отличается по семантике от прочих mutating endpoints
+    (DoD: any_modify_on_hard_blocked_returns_403).
+    """
+    product = product_factory(status=Product.Status.HARD_BLOCKED)
+    card = ProductModeration.objects.create(
+        product=product,
+        seller_id=product.seller.auth_user_id,
+        status=ProductModeration.ModerationStatus.HARD_BLOCKED,
+        moderator_id=moderator_id,
+    )
+
+    resp = moderator_client.post(
+        f"/api/v1/tickets/{card.id}/block",
+        {"blocking_reason_ids": [str(hard_blocking_reason.id)]},
+        format="json",
+    )
+    assert resp.status_code == 403
+    assert resp.data["code"] == "FORBIDDEN"
 
 
 def test_edited_event_on_hard_blocked_is_ignored(service_api_client, product_factory):
@@ -209,3 +280,19 @@ def test_deleted_event_removes_hard_blocked(service_api_client, product_factory)
 
     product.refresh_from_db()
     assert product.status == Product.Status.HARD_BLOCKED
+
+
+def test_block_request_without_blocking_reason_ids_is_rejected(moderator_client, in_review_card):
+    """
+    openapi BlockDecisionRequest требует blocking_reason_ids (minItems: 1).
+    Пустой список / отсутствующее поле → 400, статус тикета не меняется.
+    """
+    resp = moderator_client.post(
+        f"/api/v1/tickets/{in_review_card.id}/block",
+        {"blocking_reason_ids": []},
+        format="json",
+    )
+    assert resp.status_code == 400
+
+    in_review_card.refresh_from_db()
+    assert in_review_card.status == ProductModeration.ModerationStatus.IN_REVIEW
