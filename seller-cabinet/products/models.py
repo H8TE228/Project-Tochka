@@ -37,6 +37,9 @@ class BlockingReason(models.Model):
     """Справочник причин блокировки. Заполняется Moderation, читается B2B."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=500)
+    # US-MOD-05 / US-MOD-06: причина с hard_block=True маршрутизирует решение в HARD_BLOCKED
+    # (терминальный статус) вместо обычного soft BLOCKED.
+    hard_block = models.BooleanField(default=False)
 
     def __str__(self):
         return self.title

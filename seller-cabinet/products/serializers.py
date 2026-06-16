@@ -381,15 +381,35 @@ class ModerationEventSerializer(serializers.Serializer):
         return value
 
 
-class TicketDeclineSerializer(serializers.Serializer):
-    """POST /api/v1/tickets/{id}/decline — US-MOD-05."""
-    hard_block = serializers.BooleanField(required=True)
+class BlockDecisionSerializer(serializers.Serializer):
+    """POST /api/v1/tickets/{id}/block — US-MOD-05. openapi: BlockDecisionRequest.
+
+    hard_block больше не принимается как явный флаг от клиента: маршрут
+    (soft BLOCKED vs терминальный HARD_BLOCKED) определяется причинами,
+    выбранными модератором (BlockingReason.hard_block), а не телом запроса.
+    Это исключает ошибку клиента, способную обойти терминальность напрямую.
+    """
+    blocking_reason_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+    )
     moderator_comment = serializers.CharField(required=False, allow_blank=True, default="")
     field_reports = serializers.ListField(
         child=serializers.DictField(),
         required=False,
         default=list,
     )
+
+    def validate_blocking_reason_ids(self, value):
+        found_ids = set(
+            BlockingReason.objects.filter(id__in=value).values_list("id", flat=True)
+        )
+        missing = [str(v) for v in value if v not in found_ids]
+        if missing:
+            raise serializers.ValidationError(
+                f"Unknown blocking_reason_ids: {missing}"
+            )
+        return value
 
 
 class ProductEventSerializer(serializers.Serializer):

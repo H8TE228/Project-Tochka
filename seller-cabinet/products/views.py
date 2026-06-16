@@ -44,7 +44,7 @@ from .serializers import (
     UnreserveRequestSerializer,
     InventoryOrderRequestSerializer,
     ModerationEventSerializer,
-    TicketDeclineSerializer,
+    BlockDecisionSerializer,
     ProductEventSerializer,
     InvoiceWriteSerializer,
     InvoiceReadSerializer,
@@ -935,10 +935,10 @@ class TicketApproveView(APIView):
                 )
 
             if card.status == ProductModeration.ModerationStatus.HARD_BLOCKED:
-                return Response(
-                    {"code": "HARD_BLOCKED", "message": "Product is permanently blocked"},
-                    status=status.HTTP_409_CONFLICT,
-                )
+                raise HardBlockedForbidden(detail={
+                    "code": "FORBIDDEN",
+                    "message": "Product is permanently blocked",
+                })
 
             if card.status != ProductModeration.ModerationStatus.IN_REVIEW:
                 return Response(
@@ -1065,12 +1065,15 @@ class ModerationEventApplyView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class TicketDeclineView(APIView):
+class TicketBlockView(APIView):
     """
-    POST /api/v1/tickets/{ticket_id}/decline — US-MOD-05 (канон-flow MOD-5).
+    POST /api/v1/tickets/{ticket_id}/block — US-MOD-05 (канон-flow MOD-5).
+    openapi: BlockDecisionRequest / тот же канон-flow эндпоинт, что у soft-block.
 
     Отклонение тикета: IN_REVIEW → HARD_BLOCKED (terminal) или BLOCKED (soft).
-    Маршрут определяется флагом hard_block в теле запроса.
+    Маршрут soft/hard НЕ принимается от клиента напрямую: он выводится из
+    причин блокировки (blocking_reason_ids → BlockingReason.hard_block).
+    Если хотя бы одна выбранная причина терминальна — решение терминально.
     Отправляет событие BLOCKED + hard_block в B2B через on_commit.
     """
 
@@ -1080,10 +1083,12 @@ class TicketDeclineView(APIView):
     def post(self, request, ticket_id):
         moderator_uuid = _auth_uuid_from_user(request.user)
 
-        serializer = TicketDeclineSerializer(data=request.data)
+        serializer = BlockDecisionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        hard_block = data["hard_block"]
+        reasons = list(BlockingReason.objects.filter(id__in=data["blocking_reason_ids"]))
+        hard_block = any(reason.hard_block for reason in reasons)
+        primary_reason_id = data["blocking_reason_ids"][0]
 
         with transaction.atomic():
             try:
@@ -1099,11 +1104,15 @@ class TicketDeclineView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # Терминальность: HARD_BLOCKED не подлежит ни одному штатному mutating
+            # endpoint, включая повторный block/approve того же тикета — 403, а не 409,
+            # чтобы попытка правки терминальной карточки не отличалась по семантике
+            # от попытки правки терминального товара (DoD: any_modify_on_hard_blocked_returns_403).
             if card.status == ProductModeration.ModerationStatus.HARD_BLOCKED:
-                return Response(
-                    {"code": "HARD_BLOCKED", "message": "Product is permanently blocked"},
-                    status=status.HTTP_409_CONFLICT,
-                )
+                raise HardBlockedForbidden(detail={
+                    "code": "FORBIDDEN",
+                    "message": "Product is permanently blocked",
+                })
 
             if card.status != ProductModeration.ModerationStatus.IN_REVIEW:
                 return Response(
@@ -1134,6 +1143,7 @@ class TicketDeclineView(APIView):
                 product_id=str(card.product_id),
                 hard_block=hard_block,
                 field_reports=data.get("field_reports") or [],
+                blocking_reason_id=str(primary_reason_id),
             )
 
         return Response(
