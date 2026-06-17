@@ -14,8 +14,7 @@ from .views import (
     FavoriteProductView,
     FavoriteProductListView,
     # US-CART-02
-    SubscriptionListCreateView,
-    SubscriptionDetailView,
+    ProductSubscriptionView,
     # US-CART-03
     CartView,
     CartItemListCreateView,
@@ -49,12 +48,9 @@ urlpatterns = [
     path("breadcrumbs", CategoryBreadcrumbsView.as_view(), name="category-breadcrumbs"),
     path("catalog/products/<uuid:product_id>", ProductCardView.as_view(), name="product-card"),
     path("catalog/products/<uuid:product_id>/similar", SimilarProductsView.as_view(), name="similar-products"),
+    path("favorites/<uuid:product_id>/subscribe", ProductSubscriptionView.as_view(), name="product-subscription"),
     path("favorites/<uuid:product_id>", FavoriteProductView.as_view(), name="favorite-product"),
     path("favorites", FavoriteProductListView.as_view(), name="list-favorite-products"),
-
-    # US-CART-02: подписки на изменения товара
-    path("subscribe", SubscriptionListCreateView.as_view(), name="subscriptions"),
-    path("subscribe/<uuid:subscription_id>", SubscriptionDetailView.as_view(), name="subscription-detail"),
 
     # US-CART-03: корзина
     path("cart", CartView.as_view(), name="cart"),
@@ -63,7 +59,7 @@ urlpatterns = [
     path("cart/merge", CartMergeView.as_view(), name="cart-merge"),
 
     # US-CART-04: баннеры
-    path("home/banners", HomeBannersView.as_view(), name="home-banners"),
+    path("catalog/banners", HomeBannersView.as_view(), name="catalog-banners"),
     path("banner-events", BannerEventsView.as_view(), name="banner-events"),
 
     # US-CART-05: подборки товаров

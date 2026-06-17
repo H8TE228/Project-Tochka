@@ -459,47 +459,34 @@ def _b2b_check_product_exists(product_id):
         raise DRFNotFound("Product not found")
  
  
-class SubscriptionListCreateView(APIView):
-    """POST /api/v1/subscribe — создать подписку. GET — список своих."""
+class ProductSubscriptionView(APIView):
+    """POST/DELETE /api/v1/favorites/{product_id}/subscribe — подписка на изменения товара."""
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
- 
-    def get(self, request):
-        qs = Subscription.objects.filter(user_id=request.user.id).order_by("-created_at")
-        return Response({"items": SubscriptionReadSerializer(qs, many=True).data})
- 
-    def post(self, request):
+
+    def post(self, request, product_id):
         serializer = SubscriptionWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        product_id = serializer.validated_data["product_id"]
         notify_on = serializer.validated_data["notify_on"]
- 
-        # 404 если товара нет в B2B
+
         _b2b_check_product_exists(product_id)
- 
-        # 409 если уже подписан
+
         if Subscription.objects.filter(user_id=request.user.id, product_id=product_id).exists():
             return Response(
                 {"code": "CONFLICT", "message": "Already subscribed to this product"},
                 status=status.HTTP_409_CONFLICT,
             )
- 
+
         sub = Subscription.objects.create(
             user_id=request.user.id, product_id=product_id, notify_on=notify_on,
         )
         return Response(
             SubscriptionReadSerializer(sub).data, status=status.HTTP_201_CREATED
         )
- 
- 
-class SubscriptionDetailView(APIView):
-    """DELETE /api/v1/subscribe/{subscription_id} — отписаться."""
-    authentication_classes = [JWTAuthentication]
-    permission_classes = [IsAuthenticated]
- 
-    def delete(self, request, subscription_id):
+
+    def delete(self, request, product_id):
         try:
-            sub = Subscription.objects.get(id=subscription_id, user_id=request.user.id)
+            sub = Subscription.objects.get(user_id=request.user.id, product_id=product_id)
         except Subscription.DoesNotExist:
             return Response(
                 {"code": "NOT_FOUND", "message": "Subscription not found"},
@@ -752,17 +739,17 @@ class CartMergeView(APIView):
 # US-CART-04: баннеры
 # ============================================================
 class HomeBannersView(APIView):
-    """GET /api/v1/home/banners — активные баннеры по расписанию (публичный)."""
+    """GET /api/v1/catalog/banners — активные баннеры по расписанию (публичный)."""
     authentication_classes = []
     permission_classes = []
- 
+
     def get(self, request):
         now = timezone.now()
         qs = Banner.objects.filter(is_active=True)
         qs = qs.filter(models.Q(starts_at__isnull=True) | models.Q(starts_at__lte=now))
         qs = qs.filter(models.Q(ends_at__isnull=True) | models.Q(ends_at__gte=now))
         qs = qs.order_by("-priority", "-created_at")
-        return Response({"items": BannerSerializer(qs, many=True).data})
+        return Response(BannerSerializer(qs, many=True).data)
  
  
 class BannerEventsView(APIView):
@@ -840,12 +827,14 @@ class CollectionListView(APIView):
         if all_product_ids:
             try:
                 upstream = b2b_post(
-                    "/api/v1/public/products",
+                    "/api/v1/public/products/batch",
                     params=[],
                     json_data={"product_ids": all_product_ids},
                 )
                 if upstream.status_code < 400:
-                    b2b_items = upstream.json().get("items", [])
+                    b2b_items = upstream.json()
+                    if not isinstance(b2b_items, list):
+                        b2b_items = []
                     b2b_by_id = {str(p.get("id")): p for p in b2b_items}
             except UpstreamUnavailable:
                 # При недоступности B2B возвращаем подборки с пустыми products
@@ -906,7 +895,7 @@ class CollectionProductsView(APIView):
         # Batch-обогащение из B2B; B2B возвращает только доступные товары
         try:
             upstream_response = b2b_post(
-                "/api/v1/public/products",
+                "/api/v1/public/products/batch",
                 params=[],
                 json_data={"product_ids": [str(pid) for pid in product_ids]},
             )
@@ -924,8 +913,9 @@ class CollectionProductsView(APIView):
         if upstream_response.status_code >= 400:
             return Response(upstream_response.json(), status=upstream_response.status_code)
 
-        b2b_data = upstream_response.json()
-        b2b_items = b2b_data.get("items", []) if isinstance(b2b_data, dict) else []
+        b2b_items = upstream_response.json()
+        if not isinstance(b2b_items, list):
+            b2b_items = []
 
         # Товары, не вернувшиеся из B2B — недоступны (удалены/заблокированы)
         available_ids = {str(p.get("id")) for p in b2b_items}

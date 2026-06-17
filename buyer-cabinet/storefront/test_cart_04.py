@@ -16,11 +16,14 @@ from rest_framework import status
 from .models import Banner, BannerEvent
 
 
+BANNERS_URL = "/api/v1/catalog/banners"
+
+
 @override_settings(
     SECRET_KEY="test-secret-key-for-jwt-that-is-long-enough",
 )
 class HomeBannersTests(TestCase):
-    """GET /api/v1/home/banners — публичный, фильтры и сортировка."""
+    """GET /api/v1/catalog/banners — публичный, фильтры и сортировка."""
 
     def setUp(self):
         self.client = APIClient()  # анонимный — endpoint публичный
@@ -66,9 +69,9 @@ class HomeBannersTests(TestCase):
             ends_at=now - timedelta(days=1),  # закончился
         )
 
-        resp = self.client.get("/api/v1/home/banners")
+        resp = self.client.get(BANNERS_URL)
         assert resp.status_code == 200, resp.content
-        ids = [item["id"] for item in resp.data["items"]]
+        ids = [item["id"] for item in resp.data]
         # Только 3 активных + в расписании
         assert len(ids) == 3
         # Сортировка по priority DESC
@@ -88,9 +91,9 @@ class HomeBannersTests(TestCase):
             ends_at=timezone.now() - timedelta(days=1),
         )
 
-        resp = self.client.get("/api/v1/home/banners")
+        resp = self.client.get(BANNERS_URL)
         assert resp.status_code == 200
-        assert resp.data == {"items": []}
+        assert resp.data == []
 
     def test_get_banners_does_not_require_auth(self):
         """Эндпоинт публичный — JWT не нужен."""
@@ -99,9 +102,9 @@ class HomeBannersTests(TestCase):
             priority=1, is_active=True,
         )
         client = APIClient()  # никакого токена
-        resp = client.get("/api/v1/home/banners")
+        resp = client.get(BANNERS_URL)
         assert resp.status_code == 200
-        assert len(resp.data["items"]) == 1
+        assert len(resp.data) == 1
 
 
 @override_settings(

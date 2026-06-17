@@ -33,9 +33,9 @@ class Subscription(models.Model):
     повторный POST по тому же товару → 409.
     """
 
-    NOTIFY_BACK_IN_STOCK = "back_in_stock"
-    NOTIFY_PRICE_DROPPED = "price_dropped"
-    NOTIFY_ON_CHOICES = (NOTIFY_BACK_IN_STOCK, NOTIFY_PRICE_DROPPED)
+    NOTIFY_BACK_IN_STOCK = "BACK_IN_STOCK"
+    NOTIFY_PRICE_DROP = "PRICE_DROP"
+    NOTIFY_ON_CHOICES = (NOTIFY_BACK_IN_STOCK, NOTIFY_PRICE_DROP)
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user_id = models.UUIDField()
