@@ -15,8 +15,7 @@ from .models import Subscription, Cart, CartItem, Banner, BannerEvent
 
 
 class SubscriptionWriteSerializer(serializers.Serializer):
-    """POST /api/v1/subscribe — создание подписки на товар."""
-    product_id = serializers.UUIDField()
+    """POST /api/v1/favorites/{product_id}/subscribe — создание подписки на товар."""
     notify_on = serializers.ListField(
         child=serializers.CharField(),
         min_length=1,

@@ -22,10 +22,10 @@ FAKE_PRODUCT_ID_3 = uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc")
 
 
 def _b2b_response(items: list) -> MagicMock:
-    """Имитирует успешный ответ B2B с переданными товарами."""
+    """Имитирует успешный ответ B2B batch — plain array товаров."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
-    mock_resp.json.return_value = {"items": items, "total_count": len(items)}
+    mock_resp.json.return_value = items
     return mock_resp
 
 
