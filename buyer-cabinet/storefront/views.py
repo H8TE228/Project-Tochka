@@ -12,6 +12,7 @@ from buyer_cabinet.permissions import IsServiceAuthenticated
 from .serializers import FavoritesSerializer
 from .models import Favorite
 
+from .cart_response import empty_cart_response, enrich_cart_items
 from .services import (
     MAX_LIMIT,
     DEFAULT_LIMIT,
@@ -502,29 +503,6 @@ class ProductSubscriptionView(APIView):
 # ============================================================
 # US-CART-03: корзина
 # ============================================================
-class _SkuLookup:
-    """Утилиты для обогащения корзины из B2B."""
- 
-    @staticmethod
-    def collect_sku_data(sku_ids):
-        """
-        Возвращает: dict {sku_id_str: {"sku": {...}, "product": {...}}}.
-        Для MVP — простой проход по public-каталогу B2B и фильтрация по нужным sku_ids.
-        В будущем заменим на batch-endpoint /skus в B2B.
-        """
-        result = {}
-        try:
-            data = b2b_get_products([("limit", "1000"), ("offset", "0")])
-        except Exception:
-            return result
-        items = data.get("items", []) if isinstance(data, dict) else []
-        for product in items:
-            for sku in product.get("skus", []) or []:
-                if str(sku.get("id")) in sku_ids:
-                    result[str(sku["id"])] = {"sku": sku, "product": product}
-        return result
- 
- 
 def _get_or_create_user_cart(user) -> "Cart":
     cart, _ = Cart.objects.get_or_create(user_id=user.id)
     return cart
@@ -543,100 +521,8 @@ def _resolve_cart_for_request(request):
     if session_id:
         return _get_or_create_session_cart(session_id)
     return None
- 
- 
-def _enrich_cart_items(cart) -> dict:
-    """Собирает payload корзины с обогащением из B2B и пометкой недоступных позиций."""
-    items_qs = list(cart.items.all())
-    sku_ids = {str(i.sku_id) for i in items_qs}
-    sku_data = _SkuLookup.collect_sku_data(sku_ids) if sku_ids else {}
 
-    enriched = []
-    subtotal = 0
-    all_available = True
-    for item in items_qs:
-        sid = str(item.sku_id)
-        if item.unavailable_reason:
-            all_available = False
-            bundle = sku_data.get(sid)
-            name = None
-            image = None
-            product_id = None
-            unit_price = None
-            if bundle:
-                sku = bundle["sku"]
-                product = bundle["product"]
-                name = sku.get("name") or product.get("title") or ""
-                image = sku.get("image") or ""
-                product_id = str(product.get("id")) if product.get("id") else None
-                unit_price = int(sku.get("price") or 0)
-            enriched.append({
-                "sku_id": sid,
-                "quantity": item.quantity,
-                "is_available": False,
-                "unavailable_reason": item.unavailable_reason,
-                "unit_price": unit_price,
-                "line_total": 0,
-                "available_quantity": 0,
-                "name": name,
-                "image": image,
-                "product_id": product_id,
-            })
-            continue
-        bundle = sku_data.get(sid)
-        if bundle is None:
-            all_available = False
-            enriched.append({
-                "sku_id": sid,
-                "quantity": item.quantity,
-                "is_available": False,
-                "unavailable_reason": "sku_not_found",
-                "unit_price": None,
-                "line_total": None,
-                "available_quantity": 0,
-                "name": None,
-                "image": None,
-            })
-            continue
-        sku = bundle["sku"]
-        product = bundle["product"]
-        available_qty = int(sku.get("active_quantity") or 0)
-        unit_price = int(sku.get("price") or 0)
-        unavailable_reason = None
-        if available_qty <= 0:
-            unavailable_reason = "out_of_stock"
-        elif available_qty < item.quantity:
-            unavailable_reason = "insufficient_stock"
-        is_available = unavailable_reason is None
-        if not is_available:
-            all_available = False
 
-        line_total = unit_price * item.quantity if is_available else 0
-        enriched.append({
-            "sku_id": sid,
-            "quantity": item.quantity,
-            "is_available": is_available,
-            "unavailable_reason": unavailable_reason,
-            "unit_price": unit_price,
-            "line_total": line_total,
-            "available_quantity": available_qty,
-            "name": sku.get("name") or product.get("title") or "",
-            "image": sku.get("image") or "",
-            "product_id": str(product.get("id")) if product.get("id") else None,
-        })
-        if is_available:
-            subtotal += line_total
-
-    items_count = sum(i["quantity"] for i in enriched)
-    return {
-        "id": str(cart.id),
-        "items": enriched,
-        "items_count": items_count,
-        "subtotal": subtotal,
-        "is_valid": all_available and bool(enriched),
-    }
- 
- 
 class CartView(APIView):
     """GET /api/v1/cart — содержимое корзины с обогащением из B2B."""
     authentication_classes = [JWTAuthentication]
@@ -646,14 +532,8 @@ class CartView(APIView):
         cart = _resolve_cart_for_request(request)
         if cart is None:
             # Пустая корзина для анонима без X-Session-Id — той же формы, что CartResponse
-            return Response({
-                "id": None,
-                "items": [],
-                "items_count": 0,
-                "subtotal": 0,
-                "is_valid": False,
-            })
-        return Response(_enrich_cart_items(cart))
+            return Response(empty_cart_response())
+        return Response(enrich_cart_items(cart))
  
  
 class CartItemListCreateView(APIView):
@@ -683,7 +563,7 @@ class CartItemListCreateView(APIView):
             item.save(update_fields=["quantity", "updated_at"])
  
         return Response(
-            _enrich_cart_items(cart),
+            enrich_cart_items(cart),
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
  
@@ -713,14 +593,17 @@ class CartItemDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         item.quantity = serializer.validated_data["quantity"]
         item.save(update_fields=["quantity", "updated_at"])
-        return Response(_enrich_cart_items(cart))
+        return Response(enrich_cart_items(cart))
  
     def delete(self, request, sku_id):
         cart, item = self._find_item(request, sku_id)
         if cart is None or item is None:
-            return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(
+                {"code": "NOT_FOUND", "message": "Cart item not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         item.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response(enrich_cart_items(cart))
  
  
 class CartMergeView(APIView):
@@ -744,7 +627,7 @@ class CartMergeView(APIView):
             guest_cart = Cart.objects.get(session_id=session_id)
         except Cart.DoesNotExist:
             user_cart = _get_or_create_user_cart(request.user)
-            return Response(_enrich_cart_items(user_cart))
+            return Response(enrich_cart_items(user_cart))
  
         user_cart = _get_or_create_user_cart(request.user)
  
@@ -762,7 +645,7 @@ class CartMergeView(APIView):
         # Удаляем гостевую (включая её items по CASCADE)
         guest_cart.delete()
  
-        return Response(_enrich_cart_items(user_cart))
+        return Response(enrich_cart_items(user_cart))
  
  
 # ============================================================
