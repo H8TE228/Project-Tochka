@@ -1,7 +1,7 @@
 import jwt
 from django.conf import settings
 from rest_framework.authentication import BaseAuthentication
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
 
 
 class TokenUser:
@@ -13,6 +13,30 @@ class TokenUser:
         self.id = payload.get("user_id")
         self.email = payload.get("email", "")
         self.role = payload.get("role", "")
+
+
+class ServiceUser:
+    """Service-to-service caller authenticated via X-Service-Key."""
+
+    is_authenticated = True
+    is_service = True
+    role = "service"
+
+
+class RequireServiceKeyAuthentication(BaseAuthentication):
+    """Mandatory X-Service-Key for service-only endpoints (401 if missing)."""
+
+    def authenticate(self, request):
+        key = request.headers.get("X-Service-Key")
+        if not key:
+            raise NotAuthenticated("Missing X-Service-Key")
+        expected = settings.SERVICE_API_KEY
+        if not expected or key != expected:
+            raise AuthenticationFailed("Invalid X-Service-Key")
+        return ServiceUser(), key
+
+    def authenticate_header(self, request):
+        return "X-Service-Key"
 
 
 class JWTAuthentication(BaseAuthentication):

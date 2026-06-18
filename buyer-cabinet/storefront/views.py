@@ -6,7 +6,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.forms.fields import BooleanField
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from buyer_cabinet.authentication import JWTAuthentication
+from buyer_cabinet.authentication import JWTAuthentication, RequireServiceKeyAuthentication
+from buyer_cabinet.permissions import IsServiceAuthenticated
 
 from .serializers import FavoritesSerializer
 from .models import Favorite
@@ -33,6 +34,7 @@ from .services import (
     stock_quantity,
     sku_price,
     product_name,
+    apply_product_event,
 )
 import uuid
 from django.db import models
@@ -49,6 +51,7 @@ from .serializers import (
     BannerSerializer, BannerEventWriteSerializer,
     CollectionSerializer,
     OrderSerializer, OrderListSerializer, CheckoutRequestSerializer,
+    B2CProductEventSerializer,
 )
 
 class HealthCheckView(APIView):
@@ -553,6 +556,33 @@ def _enrich_cart_items(cart) -> dict:
     all_available = True
     for item in items_qs:
         sid = str(item.sku_id)
+        if item.unavailable_reason:
+            all_available = False
+            bundle = sku_data.get(sid)
+            name = None
+            image = None
+            product_id = None
+            unit_price = None
+            if bundle:
+                sku = bundle["sku"]
+                product = bundle["product"]
+                name = sku.get("name") or product.get("title") or ""
+                image = sku.get("image") or ""
+                product_id = str(product.get("id")) if product.get("id") else None
+                unit_price = int(sku.get("price") or 0)
+            enriched.append({
+                "sku_id": sid,
+                "quantity": item.quantity,
+                "is_available": False,
+                "unavailable_reason": item.unavailable_reason,
+                "unit_price": unit_price,
+                "line_total": 0,
+                "available_quantity": 0,
+                "name": name,
+                "image": image,
+                "product_id": product_id,
+            })
+            continue
         bundle = sku_data.get(sid)
         if bundle is None:
             all_available = False
@@ -1238,3 +1268,24 @@ class OrderCancelView(APIView):
 
         order.save(update_fields=["status", "updated_at"])
         return Response(OrderSerializer(order).data)
+
+
+# ============================================================
+# US-ORD-04: product events from B2B
+# ============================================================
+class ProductEventView(APIView):
+    """
+    POST /api/v1/events/product — приём product-событий от B2B (US-ORD-04).
+
+    Обновляет unavailable_reason в cart_items; заказы не затрагиваются.
+    Идемпотентность по idempotency_key через ProcessedProductEvent.
+    """
+
+    authentication_classes = [RequireServiceKeyAuthentication]
+    permission_classes = [IsServiceAuthenticated]
+
+    def post(self, request):
+        serializer = B2CProductEventSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        apply_product_event(serializer.validated_data)
+        return Response(status=status.HTTP_200_OK)

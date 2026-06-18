@@ -185,3 +185,51 @@ class CheckoutRequestSerializer(serializers.Serializer):
         allow_null=True,
         default=None,
     )
+
+
+# ============================================================
+# US-ORD-04: product events from B2B
+# ============================================================
+class B2CProductEventSerializer(serializers.Serializer):
+    """POST /api/v1/events/product — события B2B → B2C (канон-flow b2c-12-handle-events)."""
+
+    EVENT_PRODUCT_BLOCKED = "PRODUCT_BLOCKED"
+    EVENT_PRODUCT_DELETED = "PRODUCT_DELETED"
+    EVENT_SKU_OUT_OF_STOCK = "SKU_OUT_OF_STOCK"
+    EVENT_OUT_OF_STOCK = "OUT_OF_STOCK"
+
+    ALLOWED_EVENTS = (
+        EVENT_PRODUCT_BLOCKED,
+        EVENT_PRODUCT_DELETED,
+        EVENT_SKU_OUT_OF_STOCK,
+        EVENT_OUT_OF_STOCK,
+    )
+
+    idempotency_key = serializers.UUIDField()
+    event = serializers.ChoiceField(choices=ALLOWED_EVENTS)
+    product_id = serializers.UUIDField(required=False, allow_null=True)
+    sku_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=False,
+    )
+    sku_id = serializers.UUIDField(required=False, allow_null=True)
+    date = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate(self, attrs):
+        event = attrs["event"]
+        sku_ids = attrs.get("sku_ids") or []
+        sku_id = attrs.get("sku_id")
+        product_id = attrs.get("product_id")
+
+        if event in (self.EVENT_PRODUCT_BLOCKED, self.EVENT_PRODUCT_DELETED):
+            if not sku_ids and not product_id:
+                raise serializers.ValidationError(
+                    "sku_ids or product_id is required for this event"
+                )
+        elif event in (self.EVENT_SKU_OUT_OF_STOCK, self.EVENT_OUT_OF_STOCK):
+            if not sku_id and not sku_ids:
+                raise serializers.ValidationError(
+                    "sku_id is required for out-of-stock events"
+                )
+        return attrs

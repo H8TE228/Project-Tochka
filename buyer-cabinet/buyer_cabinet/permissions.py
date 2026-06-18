@@ -1,6 +1,6 @@
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed, NotAuthenticated
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import BasePermission, IsAuthenticated
 
 
 class IsClient(BasePermission):
@@ -14,6 +14,15 @@ class IsClient(BasePermission):
             and request.user.is_authenticated
             and getattr(request.user, "role", None) == "client"
         )
+
+
+class IsServiceAuthenticated(IsAuthenticated):
+    """Service endpoints: caller must be authenticated via X-Service-Key."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            raise NotAuthenticated()
+        return getattr(request.user, "is_service", False)
 
 
 class HasValidServiceKey(BasePermission):
