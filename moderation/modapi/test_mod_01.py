@@ -79,6 +79,7 @@ def test_created_pending(service_api_client, db):
 
     mod_obj = ProductModeration.objects.get(product_id=product_id)
     assert mod_obj.status == ProductModeration.Status.PENDING
+    assert mod_obj.kind == ProductModeration.Kind.CREATE
 
 
 def test_edited_returns_to_review(service_api_client, product_moderation_factory, db):
@@ -113,6 +114,7 @@ def test_edited_returns_to_review(service_api_client, product_moderation_factory
 
     mod_obj.refresh_from_db()
     assert mod_obj.status == ProductModeration.Status.PENDING
+    assert mod_obj.kind == ProductModeration.Kind.EDIT
 
 
 def test_edited_updates_in_review(service_api_client, product_moderation_factory, db):

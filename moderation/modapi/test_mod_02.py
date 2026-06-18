@@ -38,7 +38,9 @@ def test_next_returns_oldest_pending(jwt_client, product_moderation_factory, db)
 
     assert resp.status_code == status.HTTP_200_OK
     assert resp.data["id"] == str(older_p1.id)
+    assert resp.data["kind"] == ProductModeration.Kind.CREATE
     assert resp.data["status"] == "IN_REVIEW"
+    assert "created_at" in resp.data
     assert resp.data["moderator_id"] == str(moderator_id)
 
     # Проверяем, что статус изменился в БД
@@ -114,4 +116,5 @@ def test_moderator_already_has_in_review_returns_409(jwt_client, product_moderat
     resp = client.post("/api/v1/queue/claim", {}, format="json")
 
     assert resp.status_code == status.HTTP_409_CONFLICT
-    assert "already have a pending product in review" in resp.data["detail"].lower()
+    assert resp.data["code"] == "ALREADY_IN_REVIEW"
+    assert "already have a pending product in review" in resp.data["message"].lower()
