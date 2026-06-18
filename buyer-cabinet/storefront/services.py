@@ -414,6 +414,25 @@ def b2b_unreserve(order_id: str, items: list[dict]):
     return response
 
 
+def b2b_fulfill(order_id: str, items: list[dict]):
+    """
+    POST /api/v1/inventory/fulfill к B2B.
+    items: [{"sku_id": "...", "quantity": N}, ...]
+    Идемпотентность на стороне B2B по order_id.
+    """
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/inventory/fulfill")
+    try:
+        response = requests.post(
+            url,
+            json={"order_id": order_id, "items": items},
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
+
+
 # ============================================================
 # US-ORD-04: обработка product-событий от B2B
 # ============================================================
