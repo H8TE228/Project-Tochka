@@ -2,6 +2,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from django.forms.fields import BooleanField
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -9,7 +10,12 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from moderation.authentication import JWTAuthentication, RequireServiceKeyAuthentication
 from moderation.permissions import IsServiceAuthenticated
 
-from .serializers import B2BEventSerializer, QueueClaimRequestSerializer, ProductModerationResponseSerializer
+from .serializers import (
+    B2BEventSerializer,
+    QueueClaimRequestSerializer,
+    ProductModerationResponseSerializer,
+    SoftBlockRequestSerializer,
+)
 
 from .services import (
     MAX_LIMIT,
@@ -19,6 +25,7 @@ from .services import (
     handle_event_created,
     handle_event_edited,
     handle_event_deleted,
+    publish_moderation_declined_to_b2b,
 )
 
 import uuid
@@ -27,7 +34,7 @@ from django.utils import timezone
 
 from django.db import transaction
 
-from .models import ProductBlockingReason, ProductModeration
+from .models import ProductBlockingReason, ProductModeration, ProductModerationFieldReport
 
 
 class HealthCheckView(APIView):
@@ -113,3 +120,79 @@ class QueueClaimView(APIView):
 
         serializer = ProductModerationResponseSerializer(product_to_review)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class TicketBlockView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, ticket_id):
+        serializer = SoftBlockRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        blocking_reason = ProductBlockingReason.objects.filter(
+            id=data["blocking_reason_id"]
+        ).first()
+        if blocking_reason is None:
+            raise ValidationError({"blocking_reason_id": "Unknown blocking reason."})
+        if blocking_reason.hard_block:
+            raise ValidationError({
+                "blocking_reason_id": "Hard-only reason cannot be used for soft block."
+            })
+
+        moderator_id = request.user.id
+        with transaction.atomic():
+            product = ProductModeration.objects.select_for_update().filter(
+                id=ticket_id
+            ).first()
+            if product is None:
+                return Response(
+                    {"code": "NOT_FOUND", "message": "Ticket not found."},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+            if str(product.moderator_id) != str(moderator_id):
+                raise PermissionDenied("Cannot decline another moderator's ticket.")
+            if product.status != ProductModeration.Status.IN_REVIEW:
+                return Response(
+                    {"code": "WRONG_STATUS", "message": "Ticket must be in review."},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            reports_data = data["field_reports"]
+            ProductModerationFieldReport.objects.filter(
+                product_moderation=product
+            ).delete()
+            ProductModerationFieldReport.objects.bulk_create([
+                ProductModerationFieldReport(
+                    product_moderation=product,
+                    field_name=report["field_name"],
+                    sku_id=report.get("sku_id"),
+                    comment=report["comment"],
+                )
+                for report in reports_data
+            ])
+
+            product.status = ProductModeration.Status.BLOCKED
+            product.blocking_reason = blocking_reason
+            product.moderator_comment = data["moderator_comment"]
+            product.date_moderation = timezone.now()
+            product.date_updated = timezone.now()
+            product.save(
+                update_fields=[
+                    "status",
+                    "blocking_reason",
+                    "moderator_comment",
+                    "date_moderation",
+                    "date_updated",
+                ]
+            )
+
+            publish_moderation_declined_to_b2b(
+                product_id=product.product_id,
+                blocking_reason_id=blocking_reason.id,
+                field_reports=reports_data,
+            )
+
+        response_serializer = ProductModerationResponseSerializer(product)
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
