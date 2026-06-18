@@ -52,6 +52,17 @@ class CartItemQuantityUpdateSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
 
+CART_ITEM_RESPONSE_FIELDS = frozenset({
+    "sku_id", "quantity", "is_available", "unavailable_reason",
+    "unit_price", "line_total", "available_quantity",
+    "name", "image", "product_id",
+})
+
+CART_RESPONSE_FIELDS = frozenset({
+    "id", "items", "items_count", "subtotal", "is_valid",
+})
+
+
 # ============================================================
 # US-CART-04: баннеры
 # ============================================================

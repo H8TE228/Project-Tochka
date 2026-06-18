@@ -91,7 +91,10 @@ class QueueClaimView(APIView):
 
         if ProductModeration.objects.filter(moderator_id=moderator_id, status='IN_REVIEW').exists():
             return Response(
-                {"detail": "You already have a pending product in review."},
+                {
+                    "code": "ALREADY_IN_REVIEW",
+                    "message": "You already have a pending product in review.",
+                },
                 status=status.HTTP_409_CONFLICT
             )
         

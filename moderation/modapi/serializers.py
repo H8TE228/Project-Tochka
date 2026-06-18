@@ -105,6 +105,7 @@ class ProductBlockingReasonSerializer(serializers.ModelSerializer):
 
 class ProductModerationResponseSerializer(serializers.ModelSerializer):
     blocking_reason = ProductBlockingReasonSerializer(read_only=True)
+    created_at = serializers.DateTimeField(source='date_created', read_only=True)
 
     class Meta:
         model = ProductModeration
@@ -112,6 +113,7 @@ class ProductModerationResponseSerializer(serializers.ModelSerializer):
             'id',
             'product_id',
             'seller_id',
+            'kind',
             'status',
             'queue_priority',
             'json_before',
@@ -119,7 +121,7 @@ class ProductModerationResponseSerializer(serializers.ModelSerializer):
             'blocking_reason',
             'moderator_id',
             'moderator_comment',
-            'date_created',
+            'created_at',
             'date_updated',
             'date_moderation',
         ]

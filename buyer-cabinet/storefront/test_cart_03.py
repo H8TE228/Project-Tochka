@@ -22,6 +22,22 @@ FAKE_SKU_ID_1 = uuid.UUID("44444444-4444-4444-4444-444444444401")
 FAKE_SKU_ID_2 = uuid.UUID("44444444-4444-4444-4444-444444444402")
 
 
+def assert_cart_response_contract(data):
+    """Проверяет обязательные поля CartResponse и CartItem по контракту."""
+    from .serializers import CART_ITEM_RESPONSE_FIELDS, CART_RESPONSE_FIELDS
+
+    assert CART_RESPONSE_FIELDS <= set(data.keys()), (
+        f"CartResponse missing keys: {CART_RESPONSE_FIELDS - set(data.keys())}"
+    )
+    assert "total_amount" not in data, "Use subtotal, not total_amount"
+    for item in data["items"]:
+        assert CART_ITEM_RESPONSE_FIELDS <= set(item.keys()), (
+            f"CartItem missing keys: {CART_ITEM_RESPONSE_FIELDS - set(item.keys())}"
+        )
+        assert "price" not in item, "Use unit_price, not price"
+        assert "available" not in item, "Use is_available, not available"
+
+
 def make_jwt_token(user_id=FAKE_USER_ID):
     import jwt
     from django.conf import settings
@@ -59,7 +75,7 @@ class CartTests(TestCase):
         self.auth_client.credentials(HTTP_AUTHORIZATION=f"Bearer {make_jwt_token()}")
 
     # -------------- happy: add_sku_increments_quantity_if_already_in_cart --------------
-    @patch("storefront.views.b2b_get_products")
+    @patch("storefront.cart_response.b2b_get_products")
     def test_add_sku_increments_quantity_if_already_in_cart(self, mock_b2b):
         """Повторное добавление того же SKU увеличивает quantity, не дублирует строку."""
         mock_b2b.return_value = _b2b_payload([
@@ -80,9 +96,9 @@ class CartTests(TestCase):
         assert item.quantity == 5
 
     # -------------- happy: get_cart_enriched_with_b2b_data --------------
-    @patch("storefront.views.b2b_get_products")
+    @patch("storefront.cart_response.b2b_get_products")
     def test_get_cart_enriched_with_b2b_data(self, mock_b2b):
-        """GET /cart обогащает позиции данными из B2B: price, name, image, total_amount."""
+        """GET /cart обогащает позиции данными из B2B: unit_price, name, image, subtotal."""
         mock_b2b.return_value = _b2b_payload([
             {"id": str(FAKE_SKU_ID_1), "name": "Black 256GB", "price": 50000, "active_quantity": 10, "image": "/s3/x.jpg"},
         ])
@@ -110,11 +126,12 @@ class CartTests(TestCase):
         assert resp.data["subtotal"] == 100000
         assert resp.data["items_count"] == 2
         assert resp.data["is_valid"] is True
+        assert_cart_response_contract(resp.data)
 
     # -------------- unhappy: unavailable_sku_shown_with_reason --------------
-    @patch("storefront.views.b2b_get_products")
+    @patch("storefront.cart_response.b2b_get_products")
     def test_unavailable_sku_shown_with_reason(self, mock_b2b):
-        """Out-of-stock SKU остаётся в ответе с unavailable_reason, но в total_amount не входит."""
+        """Out-of-stock SKU остаётся в ответе с unavailable_reason, но в subtotal не входит."""
         mock_b2b.return_value = _b2b_payload([
             # SKU_1 в наличии 5
             {"id": str(FAKE_SKU_ID_1), "name": "OK SKU", "price": 1000, "active_quantity": 5, "image": ""},
@@ -149,9 +166,10 @@ class CartTests(TestCase):
         # В subtotal недоступная позиция не входит → 1000 * 1
         assert resp.data["subtotal"] == 1000
         assert resp.data["is_valid"] is False
+        assert_cart_response_contract(resp.data)
 
     # -------------- unhappy: guest_cart_merged_on_login --------------
-    @patch("storefront.views.b2b_get_products")
+    @patch("storefront.cart_response.b2b_get_products")
     def test_guest_cart_merged_on_login(self, mock_b2b):
         """
         Merge гостя в пользователя: при конфликте по SKU берётся MAX(guest, auth).
@@ -201,3 +219,35 @@ class CartTests(TestCase):
         items = {ci.sku_id: ci.quantity for ci in user_cart.items.all()}
         assert items[FAKE_SKU_ID_1] == 5  # MAX(2, 5)
         assert items[FAKE_SKU_ID_2] == 1  # только у гостя был, перенесён
+        assert_cart_response_contract(resp.data)
+
+    # -------------- contract: PATCH/DELETE возвращают CartResponse --------------
+    @patch("storefront.cart_response.b2b_get_products")
+    def test_patch_and_delete_return_cart_response(self, mock_b2b):
+        """PATCH и DELETE /cart/items/{sku_id} возвращают полный CartResponse."""
+        mock_b2b.return_value = _b2b_payload([
+            {"id": str(FAKE_SKU_ID_1), "name": "Black", "price": 100, "active_quantity": 100, "image": ""},
+        ])
+        self.auth_client.post(
+            "/api/v1/cart/items",
+            {"sku_id": str(FAKE_SKU_ID_1), "quantity": 2},
+            format="json",
+        )
+
+        patch_resp = self.auth_client.patch(
+            f"/api/v1/cart/items/{FAKE_SKU_ID_1}",
+            {"quantity": 4},
+            format="json",
+        )
+        assert patch_resp.status_code == 200, patch_resp.content
+        assert_cart_response_contract(patch_resp.data)
+        assert patch_resp.data["items"][0]["quantity"] == 4
+        assert patch_resp.data["subtotal"] == 400
+
+        delete_resp = self.auth_client.delete(f"/api/v1/cart/items/{FAKE_SKU_ID_1}")
+        assert delete_resp.status_code == 200, delete_resp.content
+        assert_cart_response_contract(delete_resp.data)
+        assert delete_resp.data["items"] == []
+        assert delete_resp.data["subtotal"] == 0
+        assert delete_resp.data["items_count"] == 0
+        assert delete_resp.data["is_valid"] is False
