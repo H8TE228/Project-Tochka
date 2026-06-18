@@ -98,6 +98,7 @@ def handle_event_created(validated_data):
     obj = ProductModeration(
         product_id=product_id,
         seller_id=seller_id,
+        kind=ProductModeration.Kind.CREATE,
         json_before=None,
         json_after=response,
         status=ProductModeration.Status.PENDING,
@@ -127,6 +128,7 @@ def handle_event_edited(validated_data):
     with transaction.atomic():
         mod_obj.json_before = mod_obj.json_after
         mod_obj.json_after = response
+        mod_obj.kind = ProductModeration.Kind.EDIT
         mod_obj.status = ProductModeration.Status.PENDING
         mod_obj.moderator_id = None
         mod_obj.save()

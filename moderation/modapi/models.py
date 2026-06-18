@@ -24,9 +24,14 @@ class ProductModeration(models.Model):
         BLOCKED = 'BLOCKED', 'BLOCKED'
         HARD_BLOCKED = 'HARD_BLOCKED', 'HARD_BLOCKED'
 
+    class Kind(models.TextChoices):
+        CREATE = 'CREATE', 'CREATE'
+        EDIT = 'EDIT', 'EDIT'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product_id = models.UUIDField(unique=True)
     seller_id = models.UUIDField()
+    kind = models.CharField(max_length=6, choices=Kind, default=Kind.CREATE)
     status = models.CharField(max_length=12, choices=Status)
     queue_priority = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(4)])
     json_before = models.JSONField(null=True, blank=True)
