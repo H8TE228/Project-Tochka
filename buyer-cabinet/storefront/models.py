@@ -82,10 +82,15 @@ class Cart(models.Model):
 class CartItem(models.Model):
     """Позиция в корзине — sku_id + quantity. Цена не хранится (берётся из B2B)."""
 
+    REASON_PRODUCT_BLOCKED = "PRODUCT_BLOCKED"
+    REASON_PRODUCT_DELETED = "PRODUCT_DELETED"
+    REASON_OUT_OF_STOCK = "OUT_OF_STOCK"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     cart = models.ForeignKey(Cart, on_delete=models.CASCADE, related_name="items")
     sku_id = models.UUIDField()
     quantity = models.PositiveIntegerField(default=1)
+    unavailable_reason = models.CharField(max_length=32, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -184,6 +189,15 @@ class CollectionProduct(models.Model):
 # ============================================================
 # US-ORD-01: оформление заказа (checkout)
 # ============================================================
+class ProcessedProductEvent(models.Model):
+    """Журнал обработанных product-событий от B2B (идемпотентность по idempotency_key)."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    idempotency_key = models.UUIDField(unique=True)
+    event = models.CharField(max_length=32)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class Order(models.Model):
     """
     Заказ покупателя. Создаётся через POST /api/v1/orders.

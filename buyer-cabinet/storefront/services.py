@@ -412,3 +412,93 @@ def b2b_unreserve(order_id: str, items: list[dict]):
     except requests.RequestException as exc:
         raise UpstreamUnavailable from exc
     return response
+
+
+def b2b_fulfill(order_id: str, items: list[dict]):
+    """
+    POST /api/v1/inventory/fulfill к B2B.
+    items: [{"sku_id": "...", "quantity": N}, ...]
+    Идемпотентность на стороне B2B по order_id.
+    """
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/inventory/fulfill")
+    try:
+        response = requests.post(
+            url,
+            json={"order_id": order_id, "items": items},
+            headers={"X-Service-Key": settings.SERVICE_API_KEY},
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+    return response
+
+
+# ============================================================
+# US-ORD-04: обработка product-событий от B2B
+# ============================================================
+from django.db import transaction
+from django.utils import timezone
+
+from .models import CartItem, ProcessedProductEvent
+
+
+_EVENT_TO_UNAVAILABLE_REASON = {
+    "PRODUCT_BLOCKED": CartItem.REASON_PRODUCT_BLOCKED,
+    "PRODUCT_DELETED": CartItem.REASON_PRODUCT_DELETED,
+    "SKU_OUT_OF_STOCK": CartItem.REASON_OUT_OF_STOCK,
+    "OUT_OF_STOCK": CartItem.REASON_OUT_OF_STOCK,
+}
+
+
+def _resolve_sku_ids_from_product(product_id) -> list[str]:
+    """Подтянуть SKU товара из B2B, если событие пришло только с product_id."""
+    try:
+        product = b2b_get_product(str(product_id))
+    except Exception:
+        return []
+    sku_ids = []
+    for sku in product.get("skus", []) or []:
+        sku_id = sku.get("id")
+        if sku_id:
+            sku_ids.append(str(sku_id))
+    return sku_ids
+
+
+def _collect_sku_ids(event_data: dict) -> list[str]:
+    sku_ids = [str(sid) for sid in (event_data.get("sku_ids") or [])]
+    if event_data.get("sku_id"):
+        sku_ids.append(str(event_data["sku_id"]))
+    if sku_ids:
+        return list(dict.fromkeys(sku_ids))
+
+    product_id = event_data.get("product_id")
+    if product_id:
+        return _resolve_sku_ids_from_product(product_id)
+    return []
+
+
+def apply_product_event(event_data: dict) -> bool:
+    """
+    Применить product-событие к cart_items. Возвращает True, если событие новое;
+    False — дубликат по idempotency_key (без побочных эффектов).
+    """
+    idempotency_key = event_data["idempotency_key"]
+    event = event_data["event"]
+
+    with transaction.atomic():
+        if ProcessedProductEvent.objects.filter(idempotency_key=idempotency_key).exists():
+            return False
+
+        sku_ids = _collect_sku_ids(event_data)
+        if sku_ids:
+            reason = _EVENT_TO_UNAVAILABLE_REASON[event]
+            CartItem.objects.filter(sku_id__in=sku_ids).update(
+                unavailable_reason=reason,
+                updated_at=timezone.now(),
+            )
+
+        ProcessedProductEvent.objects.create(
+            idempotency_key=idempotency_key,
+            event=event,
+        )
+    return True

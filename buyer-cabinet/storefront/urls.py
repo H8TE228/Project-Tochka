@@ -30,6 +30,8 @@ from .views import (
     OrderListCreateView,
     OrderDetailView,
     OrderCancelView,
+    # US-ORD-04
+    ProductEventView,
 )
 
 
@@ -70,4 +72,7 @@ urlpatterns = [
     path("orders", OrderListCreateView.as_view(), name="orders"),
     path("orders/<uuid:order_id>", OrderDetailView.as_view(), name="order-detail"),
     path("orders/<uuid:order_id>/cancel", OrderCancelView.as_view(), name="order-cancel"),
+
+    # US-ORD-04: product events from B2B
+    path("events/product", ProductEventView.as_view(), name="events-product"),
 ]
