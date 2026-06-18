@@ -1,9 +1,11 @@
 from urllib.parse import urljoin
+import uuid
 
 import requests
 from django.db import transaction
 from django.conf import settings
 from django.core.cache import cache
+from django.utils import timezone
 
 from rest_framework.exceptions import NotFound, APIException, ValidationError
 from rest_framework.response import Response
@@ -62,6 +64,51 @@ def b2b_get(path: str, params: list[tuple[str, str]]):
     except requests.RequestException as exc:
         raise UpstreamUnavailable from exc
     return response
+
+
+def _post_moderation_event(url: str, payload: dict, service_key: str) -> None:
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers={
+                "X-Service-Key": service_key,
+                "X-Service-Id": "moderation",
+            },
+            timeout=B2B_TIMEOUT_SEC,
+        )
+    except requests.RequestException as exc:
+        raise UpstreamUnavailable from exc
+
+    if response.status_code >= 400:
+        raise UpstreamUnavailable()
+
+
+def publish_moderation_declined_to_b2b(
+    product_id: str,
+    blocking_reason_id: str,
+    field_reports: list[dict],
+) -> None:
+    serialized_reports = [
+        {
+            **report,
+            "sku_id": str(report["sku_id"]) if report.get("sku_id") else None,
+        }
+        for report in field_reports
+    ]
+    payload = {
+        "product_id": str(product_id),
+        "event_type": "BLOCKED",
+        "hard_block": False,
+        "occurred_at": timezone.now().isoformat(),
+        "idempotency_key": str(uuid.uuid4()),
+        "field_reports": serialized_reports,
+        "blocking_reason_id": str(blocking_reason_id),
+    }
+    url = urljoin(settings.B2B_URL.rstrip("/") + "/", "api/v1/moderation/events")
+    transaction.on_commit(
+        lambda: _post_moderation_event(url, payload, settings.SERVICE_API_KEY)
+    )
 
 
 def check_idempotency(idempotency_key: str) -> bool:

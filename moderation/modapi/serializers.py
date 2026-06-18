@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ProductModeration, ProductBlockingReason
+from .models import ProductModeration, ProductBlockingReason, ProductModerationFieldReport
 
 
 class EventProductCreatedSerializer(serializers.Serializer):
@@ -78,6 +78,23 @@ class QueueClaimRequestSerializer(serializers.Serializer):
         allow_empty=True,
         required=False
     )
+
+
+class FieldReportRequestSerializer(serializers.Serializer):
+    field_name = serializers.ChoiceField(choices=ProductModerationFieldReport.FieldName.values)
+    sku_id = serializers.UUIDField(required=False, allow_null=True)
+    comment = serializers.CharField(max_length=1000)
+
+
+class SoftBlockRequestSerializer(serializers.Serializer):
+    blocking_reason_id = serializers.UUIDField()
+    moderator_comment = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=2000,
+    )
+    field_reports = FieldReportRequestSerializer(many=True, required=False, default=list)
 
 
 class ProductBlockingReasonSerializer(serializers.ModelSerializer):
