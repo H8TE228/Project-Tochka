@@ -72,7 +72,7 @@ class BannerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Banner
         fields = (
-            "id", "title", "image_url", "target_url",
+            "id", "title", "image_url", "link",
             "priority", "is_active", "starts_at", "ends_at",
         )
 

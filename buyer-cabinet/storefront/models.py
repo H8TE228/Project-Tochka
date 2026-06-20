@@ -118,7 +118,7 @@ class Banner(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=200)
     image_url = models.CharField(max_length=2000)
-    target_url = models.CharField(max_length=2000)
+    link = models.CharField(max_length=2000)
     priority = models.IntegerField(default=0)
     is_active = models.BooleanField(default=True)
     starts_at = models.DateTimeField(null=True, blank=True)
