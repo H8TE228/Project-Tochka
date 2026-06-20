@@ -39,32 +39,32 @@ class HomeBannersTests(TestCase):
 
         # Видимые: разные priority, попадают в расписание
         b_low = Banner.objects.create(
-            title="Low priority", image_url="/i/low.jpg", target_url="/promo/low",
+            title="Low priority", image_url="/i/low.jpg", link="/promo/low",
             priority=1, is_active=True,
             starts_at=now - timedelta(days=1), ends_at=now + timedelta(days=10),
         )
         b_high = Banner.objects.create(
-            title="High priority", image_url="/i/high.jpg", target_url="/promo/high",
+            title="High priority", image_url="/i/high.jpg", link="/promo/high",
             priority=10, is_active=True,
             starts_at=None, ends_at=None,  # бессрочный → виден
         )
         b_mid = Banner.objects.create(
-            title="Mid", image_url="/i/mid.jpg", target_url="/promo/mid",
+            title="Mid", image_url="/i/mid.jpg", link="/promo/mid",
             priority=5, is_active=True,
         )
 
         # Невидимые
         Banner.objects.create(
-            title="Inactive", image_url="/i/no.jpg", target_url="/no",
+            title="Inactive", image_url="/i/no.jpg", link="/no",
             priority=100, is_active=False,  # выключен
         )
         Banner.objects.create(
-            title="Not yet", image_url="/i/future.jpg", target_url="/future",
+            title="Not yet", image_url="/i/future.jpg", link="/future",
             priority=99, is_active=True,
             starts_at=now + timedelta(days=5),  # ещё не начался
         )
         Banner.objects.create(
-            title="Expired", image_url="/i/past.jpg", target_url="/past",
+            title="Expired", image_url="/i/past.jpg", link="/past",
             priority=99, is_active=True,
             ends_at=now - timedelta(days=1),  # закончился
         )
@@ -82,11 +82,11 @@ class HomeBannersTests(TestCase):
         """Нет активных баннеров → 200 OK с пустым списком (не 404)."""
         # Создадим только неактивные/просроченные баннеры
         Banner.objects.create(
-            title="Off", image_url="/i/x.jpg", target_url="/x",
+            title="Off", image_url="/i/x.jpg", link="/x",
             priority=10, is_active=False,
         )
         Banner.objects.create(
-            title="Expired", image_url="/i/y.jpg", target_url="/y",
+            title="Expired", image_url="/i/y.jpg", link="/y",
             priority=10, is_active=True,
             ends_at=timezone.now() - timedelta(days=1),
         )
@@ -98,7 +98,7 @@ class HomeBannersTests(TestCase):
     def test_get_banners_does_not_require_auth(self):
         """Эндпоинт публичный — JWT не нужен."""
         Banner.objects.create(
-            title="Public", image_url="/i/p.jpg", target_url="/p",
+            title="Public", image_url="/i/p.jpg", link="/p",
             priority=1, is_active=True,
         )
         client = APIClient()  # никакого токена
@@ -116,7 +116,7 @@ class BannerEventsTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.banner = Banner.objects.create(
-            title="Promo", image_url="/i/p.jpg", target_url="/p",
+            title="Promo", image_url="/i/p.jpg", link="/p",
             priority=10, is_active=True,
         )
 

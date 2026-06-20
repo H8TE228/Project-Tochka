@@ -35,26 +35,26 @@ class SubscriptionTests(TestCase):
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {make_jwt_token()}")
 
     @patch("storefront.views._b2b_check_product_exists")
-    def test_subscribe_returns_201_with_notify_on(self, mock_check):
+    def test_subscribe_returns_204_with_notify_on(self, mock_check):
         """Happy path: подписка создаётся, возвращается 201 с notify_on."""
         mock_check.return_value = None
         resp = self.client.post(
             SUBSCRIBE_URL,
-            {"notify_on": ["BACK_IN_STOCK", "PRICE_DROP"]},
+            {"events": ["BACK_IN_STOCK", "PRICE_DROP"]},
             format="json",
         )
-        assert resp.status_code == status.HTTP_201_CREATED, resp.content
+        assert resp.status_code == status.HTTP_204_NO_CONTENT, resp.content
         assert resp.data["product_id"] == str(FAKE_PRODUCT_ID)
-        assert set(resp.data["notify_on"]) == {"BACK_IN_STOCK", "PRICE_DROP"}
+        assert set(resp.data["events"]) == {"BACK_IN_STOCK", "PRICE_DROP"}
         assert Subscription.objects.count() == 1
 
     @patch("storefront.views._b2b_check_product_exists")
     def test_duplicate_subscription_returns_409(self, mock_check):
         """Повторная подписка на тот же товар → 409 CONFLICT."""
         mock_check.return_value = None
-        body = {"notify_on": ["BACK_IN_STOCK"]}
+        body = {"events": ["BACK_IN_STOCK"]}
         first = self.client.post(SUBSCRIBE_URL, body, format="json")
-        assert first.status_code == status.HTTP_201_CREATED
+        assert first.status_code == status.HTTP_204_NO_CONTENT
 
         second = self.client.post(SUBSCRIBE_URL, body, format="json")
         assert second.status_code == status.HTTP_409_CONFLICT
@@ -67,14 +67,14 @@ class SubscriptionTests(TestCase):
         mock_check.return_value = None
         resp_empty = self.client.post(
             SUBSCRIBE_URL,
-            {"notify_on": []},
+            {"events": []},
             format="json",
         )
         assert resp_empty.status_code == status.HTTP_400_BAD_REQUEST, resp_empty.content
 
         resp_unknown = self.client.post(
             SUBSCRIBE_URL,
-            {"notify_on": ["lol_unknown_event"]},
+            {"events": ["lol_unknown_event"]},
             format="json",
         )
         assert resp_unknown.status_code == status.HTTP_400_BAD_REQUEST, resp_unknown.content
@@ -87,7 +87,7 @@ class SubscriptionTests(TestCase):
             mock_check.side_effect = DRFNotFound("Product not found")
             resp = self.client.post(
                 SUBSCRIBE_URL,
-                {"notify_on": ["BACK_IN_STOCK"]},
+                {"events": ["BACK_IN_STOCK"]},
                 format="json",
             )
         assert resp.status_code == status.HTTP_404_NOT_FOUND, resp.content
@@ -98,7 +98,7 @@ class SubscriptionTests(TestCase):
         mock_check.return_value = None
         created = self.client.post(
             SUBSCRIBE_URL,
-            {"notify_on": ["BACK_IN_STOCK"]},
+            {"events": ["BACK_IN_STOCK"]},
             format="json",
         )
         sub_id = created.data["id"]
@@ -111,7 +111,7 @@ class SubscriptionTests(TestCase):
         client = APIClient()
         resp = client.post(
             SUBSCRIBE_URL,
-            {"notify_on": ["BACK_IN_STOCK"]},
+            {"events": ["BACK_IN_STOCK"]},
             format="json",
         )
         assert resp.status_code in (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN)

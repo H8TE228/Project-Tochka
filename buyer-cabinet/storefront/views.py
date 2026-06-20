@@ -36,6 +36,7 @@ from .services import (
     sku_price,
     product_name,
     apply_product_event,
+    catalog_product_card_response,
 )
 import uuid
 from django.db import models
@@ -471,7 +472,7 @@ class ProductSubscriptionView(APIView):
     def post(self, request, product_id):
         serializer = SubscriptionWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        notify_on = serializer.validated_data["notify_on"]
+        notify_on_events = serializer.validated_data["events"]
 
         _b2b_check_product_exists(product_id)
 
@@ -482,10 +483,10 @@ class ProductSubscriptionView(APIView):
             )
 
         sub = Subscription.objects.create(
-            user_id=request.user.id, product_id=product_id, notify_on=notify_on,
+            user_id=request.user.id, product_id=product_id, notify_on=notify_on_events,
         )
         return Response(
-            SubscriptionReadSerializer(sub).data, status=status.HTTP_201_CREATED
+            SubscriptionReadSerializer(sub).data, status=status.HTTP_204_NO_CONTENT
         )
 
     def delete(self, request, product_id):
@@ -759,7 +760,9 @@ class CollectionListView(APIView):
                 str(cp.product_id)
                 for cp in sorted(col.collection_products.all(), key=lambda x: x.ordering)
             ]
-            products = [b2b_by_id[pid] for pid in ordered_ids if pid in b2b_by_id]
+            products = [
+                catalog_product_card_response(b2b_by_id[pid]) for pid in ordered_ids if pid in b2b_by_id
+            ]
             unavailable_ids = [pid for pid in ordered_ids if pid not in b2b_by_id]
             result.append({
                 "id": str(col.id),

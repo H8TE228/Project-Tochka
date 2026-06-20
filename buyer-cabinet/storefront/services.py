@@ -502,3 +502,18 @@ def apply_product_event(event_data: dict) -> bool:
             event=event,
         )
     return True
+
+
+# ============================================================
+# US-CART-05: подборки товаров на главной
+# ============================================================
+
+def catalog_product_card_response(product: dict = []) -> dict:
+    skus = product.get("skus", [])
+    return {
+        "id": product.get("id"),
+        "name": product.get("title", ""),
+        "min_price": min_price(skus),
+        "has_stock": any(stock_quantity(sku) > 0 for sku in skus),
+        "images": product.get("images", []),
+    }

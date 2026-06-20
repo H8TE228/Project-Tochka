@@ -16,13 +16,13 @@ from .models import Subscription, Cart, CartItem, Banner, BannerEvent
 
 class SubscriptionWriteSerializer(serializers.Serializer):
     """POST /api/v1/favorites/{product_id}/subscribe — создание подписки на товар."""
-    notify_on = serializers.ListField(
+    events = serializers.ListField(
         child=serializers.CharField(),
         min_length=1,
         max_length=10,
     )
 
-    def validate_notify_on(self, value):
+    def validate_events(self, value):
         bad = [v for v in value if v not in Subscription.NOTIFY_ON_CHOICES]
         if bad:
             raise serializers.ValidationError(
@@ -33,9 +33,11 @@ class SubscriptionWriteSerializer(serializers.Serializer):
 
 
 class SubscriptionReadSerializer(serializers.ModelSerializer):
+    events = serializers.JSONField(source="notify_on")
+
     class Meta:
         model = Subscription
-        fields = ("id", "product_id", "notify_on", "created_at")
+        fields = ("id", "product_id", "events", "created_at")
 
 
 # ============================================================
@@ -70,7 +72,7 @@ class BannerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Banner
         fields = (
-            "id", "title", "image_url", "target_url",
+            "id", "title", "image_url", "link",
             "priority", "is_active", "starts_at", "ends_at",
         )
 
