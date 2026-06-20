@@ -265,12 +265,21 @@ class ProductModeration(models.Model):
         BLOCKED = "BLOCKED", "Blocked"
         HARD_BLOCKED = "HARD_BLOCKED", "Hard Blocked"
 
+    class TicketKind(models.TextChoices):
+            """moderation/openapi.yaml:646-648 — enum для TicketKind."""
+            CREATE = "CREATE", "Create"
+            EDIT = "EDIT", "Edit"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product = models.OneToOneField(
         Product, on_delete=models.CASCADE, related_name="moderation_card"
     )
     seller_id = models.UUIDField()
-    kind = models.CharField(max_length=50, default="PRODUCT")
+    kind = models.CharField(
+        max_length=10,
+        choices=TicketKind.choices,
+        default=TicketKind.CREATE,
+        )
     status = models.CharField(
         max_length=20,
         choices=ModerationStatus.choices,
