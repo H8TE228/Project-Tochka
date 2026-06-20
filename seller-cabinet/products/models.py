@@ -279,7 +279,7 @@ class ProductModeration(models.Model):
         max_length=10,
         choices=TicketKind.choices,
         default=TicketKind.CREATE,
-        )
+        ) 
     status = models.CharField(
         max_length=20,
         choices=ModerationStatus.choices,

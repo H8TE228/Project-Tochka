@@ -1223,7 +1223,7 @@ class ProductEventView(APIView):
                     card.save(update_fields=["status", "moderator_id", "kind", "date_updated"])
 
             elif event == "DELETED":
-                if card is not None:
+                if card is not None: 
                     card.delete()
 
             ProcessedModerationEvent.objects.create(
