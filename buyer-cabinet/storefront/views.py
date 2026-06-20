@@ -471,7 +471,7 @@ class ProductSubscriptionView(APIView):
     def post(self, request, product_id):
         serializer = SubscriptionWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        notify_on = serializer.validated_data["notify_on"]
+        notify_on_events = serializer.validated_data["events"]
 
         _b2b_check_product_exists(product_id)
 
@@ -482,10 +482,10 @@ class ProductSubscriptionView(APIView):
             )
 
         sub = Subscription.objects.create(
-            user_id=request.user.id, product_id=product_id, notify_on=notify_on,
+            user_id=request.user.id, product_id=product_id, notify_on=notify_on_events,
         )
         return Response(
-            SubscriptionReadSerializer(sub).data, status=status.HTTP_201_CREATED
+            SubscriptionReadSerializer(sub).data, status=status.HTTP_204_NO_CONTENT
         )
 
     def delete(self, request, product_id):
