@@ -36,6 +36,7 @@ from .services import (
     sku_price,
     product_name,
     apply_product_event,
+    catalog_product_card_response,
 )
 import uuid
 from django.db import models
@@ -759,7 +760,9 @@ class CollectionListView(APIView):
                 str(cp.product_id)
                 for cp in sorted(col.collection_products.all(), key=lambda x: x.ordering)
             ]
-            products = [b2b_by_id[pid] for pid in ordered_ids if pid in b2b_by_id]
+            products = [
+                catalog_product_card_response(b2b_by_id[pid]) for pid in ordered_ids if pid in b2b_by_id
+            ]
             unavailable_ids = [pid for pid in ordered_ids if pid not in b2b_by_id]
             result.append({
                 "id": str(col.id),
