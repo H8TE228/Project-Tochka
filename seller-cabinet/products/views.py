@@ -1212,16 +1212,18 @@ class ProductEventView(APIView):
                         product_id=product_id,
                         seller_id=seller_id,
                         status=ProductModeration.ModerationStatus.PENDING,
+                        kind=ProductModeration.TicketKind.CREATE,
                     )
 
             elif event == "EDITED":
                 if card is not None and card.status != ProductModeration.ModerationStatus.HARD_BLOCKED:
                     card.status = ProductModeration.ModerationStatus.PENDING
                     card.moderator_id = None
-                    card.save(update_fields=["status", "moderator_id", "date_updated"])
+                    card.kind = ProductModeration.TicketKind.EDIT
+                    card.save(update_fields=["status", "moderator_id", "kind", "date_updated"])
 
             elif event == "DELETED":
-                if card is not None:
+                if card is not None: 
                     card.delete()
 
             ProcessedModerationEvent.objects.create(

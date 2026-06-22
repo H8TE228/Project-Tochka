@@ -67,7 +67,7 @@ def test_product_blocked_marks_cart_items_unavailable(service_api_client):
     CartItem.objects.create(cart=other_cart, sku_id=SKU_OTHER, quantity=1)
 
     resp = service_api_client.post(
-        "/api/v1/events/product",
+        "/api/v1/b2b/events",
         _payload("PRODUCT_BLOCKED", [SKU_1, SKU_2]),
         format="json",
     )
@@ -115,7 +115,7 @@ def test_orders_not_affected_by_product_blocked(service_api_client):
     _cart_with_items(SKU_1, SKU_2)
 
     resp = service_api_client.post(
-        "/api/v1/events/product",
+        "/api/v1/b2b/events",
         _payload("PRODUCT_BLOCKED", [SKU_1, SKU_2]),
         format="json",
     )
@@ -138,7 +138,7 @@ def test_idempotent_event_no_side_effects(service_api_client):
     ikey = uuid.uuid4()
 
     resp1 = service_api_client.post(
-        "/api/v1/events/product",
+        "/api/v1/b2b/events",
         _payload("PRODUCT_BLOCKED", [SKU_1], idempotency_key=ikey),
         format="json",
     )
@@ -151,7 +151,7 @@ def test_idempotent_event_no_side_effects(service_api_client):
     item.save(update_fields=["unavailable_reason", "updated_at"])
 
     resp2 = service_api_client.post(
-        "/api/v1/events/product",
+        "/api/v1/b2b/events",
         _payload("PRODUCT_BLOCKED", [SKU_1], idempotency_key=ikey),
         format="json",
     )
@@ -166,7 +166,7 @@ def test_missing_service_key_returns_401():
     """Запрос без X-Service-Key → 401 Unauthorized."""
     client = APIClient()
     resp = client.post(
-        "/api/v1/events/product",
+        "/api/v1/b2b/events",
         _payload("PRODUCT_BLOCKED", [SKU_1]),
         format="json",
     )
