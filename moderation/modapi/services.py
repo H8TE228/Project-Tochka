@@ -88,7 +88,14 @@ def publish_moderation_declined_to_b2b(
     product_id: str,
     blocking_reason_id: str,
     field_reports: list[dict],
+    hard_block: bool = False,
 ) -> None:
+    """
+    Шлёт событие BLOCKED в B2B (US-B2B-09 принимает на /api/v1/moderation/events).
+
+    hard_block=True означает терминальную блокировку (HARD_BLOCKED) — B2B
+    инициирует каскад в B2C с event_type=PRODUCT_HARD_BLOCKED.
+    """
     serialized_reports = [
         {
             **report,
@@ -99,7 +106,7 @@ def publish_moderation_declined_to_b2b(
     payload = {
         "product_id": str(product_id),
         "event_type": "BLOCKED",
-        "hard_block": False,
+        "hard_block": hard_block,                    # ← было всегда False
         "occurred_at": timezone.now().isoformat(),
         "idempotency_key": str(uuid.uuid4()),
         "field_reports": serialized_reports,

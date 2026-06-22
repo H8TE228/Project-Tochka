@@ -87,7 +87,17 @@ class FieldReportRequestSerializer(serializers.Serializer):
 
 
 class SoftBlockRequestSerializer(serializers.Serializer):
-    blocking_reason_id = serializers.UUIDField()
+    """
+    moderation/openapi.yaml:774 BlockDecisionRequest — required: [blocking_reason_ids].
+
+    Поле — массив UUID. Hard/soft маршрут вычисляется во view:
+    если хотя бы одна из причин имеет hard_block=True → HARD_BLOCKED, иначе BLOCKED.
+    """
+    blocking_reason_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        min_length=1,
+        allow_empty=False,
+    )
     moderator_comment = serializers.CharField(
         required=False,
         allow_blank=True,
