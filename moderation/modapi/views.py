@@ -131,15 +131,24 @@ class TicketBlockView(APIView):
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
-        blocking_reason = ProductBlockingReason.objects.filter(
-            id=data["blocking_reason_id"]
-        ).first()
-        if blocking_reason is None:
-            raise ValidationError({"blocking_reason_id": "Unknown blocking reason."})
-        if blocking_reason.hard_block:
-            raise ValidationError({
-                "blocking_reason_id": "Hard-only reason cannot be used for soft block."
-            })
+        # 1. Достаём все причины по списку UUID; если хоть одна не найдена — 400.
+        reason_ids = data["blocking_reason_ids"]
+        reasons = list(ProductBlockingReason.objects.filter(id__in=reason_ids))
+        if len(reasons) != len(reason_ids):
+            raise ValidationError(
+                {"blocking_reason_ids": "One or more blocking reasons are unknown."}
+            )
+
+        # 2. Маршрут: если хотя бы одна причина hard — терминальный HARD_BLOCKED.
+        is_hard = any(r.hard_block for r in reasons)
+        target_status = (
+            ProductModeration.Status.HARD_BLOCKED
+            if is_hard
+            else ProductModeration.Status.BLOCKED
+        )
+
+        # 3. Главная причина для FK (модель хранит одну): первая hard, иначе первая soft.
+        primary_reason = next((r for r in reasons if r.hard_block), reasons[0])
 
         moderator_id = request.user.id
         with transaction.atomic():
@@ -173,25 +182,23 @@ class TicketBlockView(APIView):
                 for report in reports_data
             ])
 
-            product.status = ProductModeration.Status.BLOCKED
-            product.blocking_reason = blocking_reason
+            product.status = target_status
+            product.blocking_reason = primary_reason
             product.moderator_comment = data["moderator_comment"]
             product.date_moderation = timezone.now()
             product.date_updated = timezone.now()
             product.save(
                 update_fields=[
-                    "status",
-                    "blocking_reason",
-                    "moderator_comment",
-                    "date_moderation",
-                    "date_updated",
+                    "status", "blocking_reason", "moderator_comment",
+                    "date_moderation", "date_updated",
                 ]
             )
 
             publish_moderation_declined_to_b2b(
                 product_id=product.product_id,
-                blocking_reason_id=blocking_reason.id,
+                blocking_reason_id=primary_reason.id,
                 field_reports=reports_data,
+                hard_block=is_hard,
             )
 
         response_serializer = ProductModerationResponseSerializer(product)
