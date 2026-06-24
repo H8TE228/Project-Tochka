@@ -81,9 +81,15 @@ class QueueClaimRequestSerializer(serializers.Serializer):
 
 
 class FieldReportRequestSerializer(serializers.Serializer):
-    field_name = serializers.ChoiceField(choices=ProductModerationFieldReport.FieldName.values)
+    """
+    moderation/openapi.yaml:756-770 FieldReport — required: [field_path, message].
+
+    field_path — произвольная строка (JSONPath-подобный путь, например 'images[0].url').
+    message — текст, maxLength: 1000.
+    """
+    field_path = serializers.CharField(max_length=255)
     sku_id = serializers.UUIDField(required=False, allow_null=True)
-    comment = serializers.CharField(max_length=1000)
+    message = serializers.CharField(max_length=1000)
 
 
 class SoftBlockRequestSerializer(serializers.Serializer):
