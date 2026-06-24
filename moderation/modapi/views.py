@@ -4,9 +4,6 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
-from django.forms.fields import BooleanField
-from django.core.exceptions import ValidationError as DjangoValidationError
-
 from moderation.authentication import JWTAuthentication, RequireServiceKeyAuthentication
 from moderation.permissions import IsServiceAuthenticated
 
@@ -28,11 +25,8 @@ from .services import (
     publish_moderation_declined_to_b2b,
 )
 
-import uuid
-from django.db import models, transaction
-from django.utils import timezone
-
 from django.db import transaction
+from django.utils import timezone
 
 from .models import ProductBlockingReason, ProductModeration, ProductModerationFieldReport
 
@@ -183,7 +177,7 @@ class TicketBlockView(APIView):
             ])
             product.status = target_status
             product.blocking_reason = primary_reason
-            product.moderator_comment = data["moderator_comment"]
+            product.moderator_comment = data["comment"]
             product.date_moderation = timezone.now()
             product.date_updated = timezone.now()
             product.save(
