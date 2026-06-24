@@ -15,7 +15,7 @@ from modapi.models import ProductModeration, ProductModerationFieldReport
 pytestmark = pytest.mark.django_db(transaction=True)
 
 
-def _payload(reasons, field_name="description"):
+def _payload(reasons, field_path="description"):
     """
     Принимает либо одну причину, либо итерируемый список.
     Возвращает body по спецификации openapi:774 BlockDecisionRequest.
@@ -24,11 +24,17 @@ def _payload(reasons, field_name="description"):
         reasons = [reasons]
     return {
         "blocking_reason_ids": [str(r.id) for r in reasons],
-        "moderator_comment": "Fix description and upload a clearer image.",
+        "comment": "Fix description and upload a clearer image.",
         "field_reports": [
-            {"field_name": field_name, "comment": "Description does not match the product."},
-            {"field_name": "product_images", "sku_id": str(uuid.uuid4()),
-             "comment": "Main image is blurry."},
+            {
+                "field_path": field_path,
+                "message": "Description does not match the product.",
+            },
+            {
+                "field_path": "product_images",
+                "sku_id": str(uuid.uuid4()),
+                "message": "Main image is blurry.",
+            },
         ],
     }
 
@@ -68,17 +74,17 @@ def test_soft_block_transitions_to_blocked_with_field_reports(
 
     reports = list(
         ProductModerationFieldReport.objects.filter(product_moderation=card)
-        .order_by("field_name")
-        .values("field_name", "comment")
+        .order_by("field_path")
+        .values("field_path", "message")
     )
     assert reports == [
         {
-            "field_name": "description",
-            "comment": "Description does not match the product.",
+            "field_path": "description",
+            "message": "Description does not match the product.",
         },
         {
-            "field_name": "product_images",
-            "comment": "Main image is blurry.",
+            "field_path": "product_images",
+            "message": "Main image is blurry.",
         },
     ]
 
@@ -107,7 +113,7 @@ def test_soft_block_emits_event_to_b2b(
     assert payload["event_type"] == "BLOCKED"
     assert payload["hard_block"] is False
     assert payload["blocking_reason_id"] == str(reason.id)
-    assert payload["field_reports"][0]["field_name"] == "description"
+    assert payload["field_reports"][0]["field_path"] == "description"
     assert payload["field_reports"][1]["sku_id"] is not None
     assert isinstance(payload["field_reports"][1]["sku_id"], str)
 
@@ -122,7 +128,7 @@ def test_soft_block_unknown_reason_returns_400(
     payload = {
         "blocking_reason_ids": [str(uuid.uuid4())],
         "field_reports": [],
-    }   
+    }
 
     resp = client.post(
         f"/api/v1/tickets/{card.id}/block",
@@ -155,24 +161,52 @@ def test_soft_block_others_card_returns_403(
     assert resp.data["code"] == "FORBIDDEN"
 
 
-def test_soft_block_invalid_field_name_returns_400(
+def test_soft_block_field_report_missing_message_returns_400(
     jwt_client,
     product_moderation_factory,
     blocking_reason_factory,
 ):
+    """field_path — свободная строка; валидация ловит отсутствие обязательного message."""
     moderator_id = uuid.uuid4()
     client = jwt_client(user_id=moderator_id)
     reason = blocking_reason_factory(hard_block=False)
     card = _in_review_card(product_moderation_factory, moderator_id)
+    payload = _payload(reason)
+    del payload["field_reports"][0]["message"]
 
     resp = client.post(
         f"/api/v1/tickets/{card.id}/block",
-        _payload(reason, field_name="unknown_field"),
+        payload,
         format="json",
     )
 
     assert resp.status_code == status.HTTP_400_BAD_REQUEST
     assert resp.data["code"] == "INVALID_REQUEST"
+
+
+def test_block_on_hard_blocked_ticket_returns_409(
+    jwt_client,
+    product_moderation_factory,
+    blocking_reason_factory,
+):
+    """Повторная блокировка тикета не в IN_REVIEW → 409 WRONG_STATUS (канон, openapi)."""
+    moderator_id = uuid.uuid4()
+    client = jwt_client(user_id=moderator_id)
+    reason = blocking_reason_factory(hard_block=True)
+    card = product_moderation_factory(
+        status=ProductModeration.Status.HARD_BLOCKED,
+        moderator_id=moderator_id,
+        json_after={"title": "Card"},
+    )
+
+    resp = client.post(
+        f"/api/v1/tickets/{card.id}/block",
+        _payload(reason),
+        format="json",
+    )
+
+    assert resp.status_code == status.HTTP_409_CONFLICT
+    assert resp.data["code"] == "WRONG_STATUS"
 
 
 def test_block_with_hard_reason_transitions_to_hard_blocked(

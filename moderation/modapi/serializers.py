@@ -96,6 +96,7 @@ class SoftBlockRequestSerializer(serializers.Serializer):
     """
     moderation/openapi.yaml:774 BlockDecisionRequest — required: [blocking_reason_ids].
 
+    comment — необязательный комментарий модератора (openapi:780).
     Поле — массив UUID. Hard/soft маршрут вычисляется во view:
     если хотя бы одна из причин имеет hard_block=True → HARD_BLOCKED, иначе BLOCKED.
     """
@@ -104,7 +105,7 @@ class SoftBlockRequestSerializer(serializers.Serializer):
         min_length=1,
         allow_empty=False,
     )
-    moderator_comment = serializers.CharField(
+    comment = serializers.CharField(
         required=False,
         allow_blank=True,
         default="",
