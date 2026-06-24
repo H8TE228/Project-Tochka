@@ -175,13 +175,12 @@ class TicketBlockView(APIView):
             ProductModerationFieldReport.objects.bulk_create([
                 ProductModerationFieldReport(
                     product_moderation=product,
-                    field_name=report["field_name"],
+                    field_path=report["field_path"],
                     sku_id=report.get("sku_id"),
-                    comment=report["comment"],
+                    message=report["message"],
                 )
                 for report in reports_data
             ])
-
             product.status = target_status
             product.blocking_reason = primary_reason
             product.moderator_comment = data["moderator_comment"]

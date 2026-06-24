@@ -53,23 +53,21 @@ class ProductModeration(models.Model):
 
 
 class ProductModerationFieldReport(models.Model):
-    class FieldName(models.TextChoices):
-        TITLE = 'title', 'Название'
-        DESCRIPTION = 'description', 'Описание'
-        PRODUCT_IMAGES = 'product_images', 'Изображения товара'
-        CATEGORY = 'category', 'Категория'
-        SKU_NAME = 'sku_name', 'Название SKU'
-        SKU_IMAGE = 'sku_image', 'Изображение SKU'
-        SKU_PRICE = 'sku_price', 'Цена SKU'
+    """
+    moderation/openapi.yaml:756-770 FieldReport — required: [field_path, message].
+
+    field_path — произвольный JSONPath-подобный путь (например 'images[0].url'),
+    message — текст до 1000 символов.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     product_moderation = models.ForeignKey(
-        ProductModeration, 
-        on_delete=models.CASCADE, 
+        ProductModeration,
+        on_delete=models.CASCADE,
         related_name='field_reports',
         verbose_name="Запись модерации"
     )
-    field_name = models.CharField(max_length=14, choices=FieldName)
+    field_path = models.CharField(max_length=255)
     sku_id = models.UUIDField(null=True, blank=True)
-    comment = models.TextField()
+    message = models.TextField()
     date_created = models.DateTimeField(auto_now_add=True)
